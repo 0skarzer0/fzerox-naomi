@@ -1,0 +1,13 @@
+# Nada con copyright: ni ROMs, ni lo que sale de ellas, ni discos, BIOS o imágenes de NAOMI
+*.z64
+*.n64
+*.v64
+*.cdi
+*.gdi
+*.iso
+*.bin
+*.bin.gz
+*.elf
+IP.BIN
+build/
+work/
