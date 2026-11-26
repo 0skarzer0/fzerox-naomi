@@ -141,6 +141,17 @@ void osCreateMesgQueue(OSMesgQueue* mq, OSMesg* msg, s32 count) {
     mq->msg = msg;
 }
 
+/* para depurar bloqueos: en qué cola espera cada hilo de N64 (por su id; 0 = no espera; bit 0 = esperando sitio) */
+u32 gPortWaitQ[16];
+
+static void note_wait(OSMesgQueue* mq, s32 full) {
+    OSThread* t = current_thread();
+
+    if (t != NULL && t->id < 16) {
+        gPortWaitQ[t->id] = mq ? ((u32) mq | full) : 0;
+    }
+}
+
 /* genwait espera sobre una dirección: los que reciben esperan en &mq->mtqueue y los que envían en &mq->fullqueue */
 static s32 mq_send(OSMesgQueue* mq, OSMesg msg, s32 flag, s32 jam) {
     u32 im = plat_irq_disable();
@@ -151,7 +162,9 @@ static s32 mq_send(OSMesgQueue* mq, OSMesg msg, s32 flag, s32 jam) {
             plat_irq_restore(im);
             return -1;
         }
+        note_wait(mq, 1);
         plat_wait(&mq->fullqueue);
+        note_wait(NULL, 0);
     }
     if (jam) {
         mq->first = (mq->first + mq->msgCount - 1) % mq->msgCount;
@@ -186,7 +199,9 @@ s32 osRecvMesg(OSMesgQueue* mq, OSMesg* msg, s32 flag) {
             plat_irq_restore(im);
             return -1;
         }
+        note_wait(mq, 0);
         plat_wait(&mq->mtqueue);
+        note_wait(NULL, 0);
     }
     if (msg != NULL) {
         *msg = mq->msg[mq->first];

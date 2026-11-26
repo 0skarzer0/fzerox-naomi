@@ -26,6 +26,8 @@ extern s32 gGameMode;
 
 static u32 sSeg[16];
 
+static u32 sCntVtx, sCntMtx; /* contadores para la traza */
+
 static void* resolve(u32 a) {
     u32 seg = a >> 24;
 
@@ -110,7 +112,7 @@ static void mtx_from_n64(float out[4][4], const u32* w) {
     for (i = 0; i < 16; i++) {
         s32 hi = (i & 1) ? (s16) (w[i >> 1] & 0xFFFF) : (s16) (w[i >> 1] >> 16);
         u32 lo = (i & 1) ? (w[8 + (i >> 1)] & 0xFFFF) : (w[8 + (i >> 1)] >> 16);
-        out[i >> 2][i & 3] = (float) ((hi << 16) | lo) * (1.0f / 65536.0f);
+        out[i >> 2][i & 3] = (float) (s32) ((hi << 16) | lo) * (1.0f / 65536.0f);   /* (s32): con lo (u32) sería sin signo */
     }
 }
 
@@ -127,10 +129,16 @@ static void mtx_mul(float out[4][4], float a[4][4], float b[4][4]) {
 }
 
 static void do_mtx(u32 w0, u32 w1) {
+    sCntMtx++;
     u32 p = (w0 & 0xFF) ^ G_MTX_PUSH;
     float m[4][4];
 
     mtx_from_n64(m, resolve(w1));
+    if (sCntMtx < 12) {
+        trace(" MTX %08x p%x [%.3f %.3f %.3f %.3f] [%.3f %.3f %.3f %.3f] [%.3f %.3f %.3f %.3f] [%.1f %.1f %.1f %.3f]\n",
+              (unsigned) w1, (unsigned) p, m[0][0], m[0][1], m[0][2], m[0][3], m[1][0], m[1][1], m[1][2], m[1][3],
+              m[2][0], m[2][1], m[2][2], m[2][3], m[3][0], m[3][1], m[3][2], m[3][3]);
+    }
     if (p & G_MTX_PROJECTION) {
         if (p & G_MTX_LOAD) {
             bcopy(m, sProj, sizeof(m));
@@ -191,6 +199,7 @@ static void lights_update(void) {
 /* ------------------------------------------------------------------ vértices */
 
 static void do_vtx(u32 w0, u32 w1) {
+    sCntVtx++;
     s32 n = (w0 >> 12) & 0xFF;
     s32 v0 = ((w0 >> 1) & 0x7F) - n;
     Vtx* src = resolve(w1);
@@ -568,6 +577,8 @@ u32 gPortTris;
 /* ---- traza de un cuadro (para depurar): gPortTraceFrame = n.º de cuadro; se lee del volcado de RAM con
  * tools/live_ram.py --str gPortTrace ---- */
 u32 gPortTraceFrame = 0xFFFFFFFF; /* n.º de cuadro a trazar (se cambia para depurar) */
+u32 gPortTraceMode = 0x8008;      /* o: el cuadro 30 después de entrar en este gGameMode (0 = no) */
+static u32 sModeFrames;
 char gPortTrace[64 * 1024];
 static u32 sTraceLen;
 static s32 sTracing;
@@ -588,12 +599,15 @@ static void trace(const char* fmt, ...) {
     }
 }
 
+static u32 sCntTri, sCntClip, sCntCull;
+
 static void draw_tri(s32 i0, s32 i1, s32 i2) {
     RVtx in[3], poly[6];
     GbVert sv[6];
     s32 n, i;
     float area;
 
+    sCntTri++;
     if (i0 >= MAX_VTX || i1 >= MAX_VTX || i2 >= MAX_VTX) {
         return;
     }
@@ -603,6 +617,7 @@ static void draw_tri(s32 i0, s32 i1, s32 i2) {
     if (in[0].z + in[0].w < 0.0f || in[1].z + in[1].w < 0.0f || in[2].z + in[2].w < 0.0f) {
         n = clip_near(in, 3, poly);
         if (n < 3) {
+            sCntClip++;
             return;
         }
     } else {
@@ -622,10 +637,12 @@ static void draw_tri(s32 i0, s32 i1, s32 i2) {
     }
     /* descarte de caras: en pantalla con y hacia abajo, las de N64 de frente van en sentido antihorario */
     area = (sv[1].x - sv[0].x) * (sv[2].y - sv[0].y) - (sv[2].x - sv[0].x) * (sv[1].y - sv[0].y);
-    if ((sGeom & G_CULL_BACK) && area > 0.0f) {
-        return;
-    }
-    if ((sGeom & G_CULL_FRONT) && area < 0.0f) {
+    if (((sGeom & G_CULL_BACK) && area > 0.0f) || ((sGeom & G_CULL_FRONT) && area < 0.0f)) {
+        if (sTracing && sCntCull < 3) {
+            trace(" CULL (%.0f,%.0f,%.4f) (%.0f,%.0f) (%.0f,%.0f) w=%.1f g=%06x\n", sv[0].x, sv[0].y, sv[0].z, sv[1].x,
+                  sv[1].y, sv[2].x, sv[2].y, poly[0].w, (unsigned) sGeom);
+        }
+        sCntCull++;
         return;
     }
     for (i = 1; i + 1 < n; i++) {
@@ -945,6 +962,8 @@ static void run_dl(Gfx* dl) {
                     stack[sp++] = dl;
                 }
                 dl = resolve(w1);
+                trace(" DL %08x -> %08x [%08x %08x] sp%d\n", (unsigned) w1, (unsigned) dl,
+                      (unsigned) dl->words.w0, (unsigned) dl->words.w1, (int) sp);
                 break;
             case G_ENDDL:
                 dl = sp > 0 ? stack[--sp] : NULL;
@@ -1089,7 +1108,9 @@ void fzx_gfx_task(OSTask* t) {
     sStateDirty = 1;
     bzero(sLoads, sizeof(sLoads));
     gb_frame_begin(0xFF000000);
-    sTracing = (gPortFrames == gPortTraceFrame);
+    sModeFrames = (gPortTraceMode != 0 && (u32) gGameMode == gPortTraceMode) ? sModeFrames + 1 : 0;
+    sTracing = (gPortFrames == gPortTraceFrame) || sModeFrames == 30;
+    sCntTri = sCntClip = sCntCull = sCntVtx = sCntMtx = 0;
     sTraceTris = 0;
     if (sTracing) {
         trace("cuadro %u, modo %x\n", (unsigned) gPortFrames, (unsigned) gGameMode);
@@ -1098,7 +1119,8 @@ void fzx_gfx_task(OSTask* t) {
     run_dl(resolve((u32) t->t.data_ptr));
     { extern unsigned gPortStage; gPortStage = 11; }
     if (sTracing) {
-        trace("fin\n");
+        trace("fin: tri %u clip %u cull %u vtx %u mtx %u\n", (unsigned) sCntTri, (unsigned) sCntClip,
+              (unsigned) sCntCull, (unsigned) sCntVtx, (unsigned) sCntMtx);
         sTracing = 0;
     }
     gb_frame_end();
