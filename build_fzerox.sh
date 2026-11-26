@@ -1,14 +1,14 @@
 #!/bin/bash
-# build_fzerox.sh BASEROM.z64
+# build_fzerox.sh BASEROM.z64 [OUT.bin]
 #
 # F-Zero X para la NAOMI 2 (mueble del Crazy Taxi), a partir de la decompilación de N64
 #   https://github.com/inspectredc/fzerox  (commit 4b00f36c, 2026-09-17, CC0)
 # compilada contra KallistiOS 9926b70a con el parche NAOMI_HOST de dc2naomi (kos/kos-9926b70a-naomi_host.patch, el
 # mismo de dkr-naomi). Mismo método que Mario Kart 64 (dc2naomi/homebrew/mk64/) y Diddy Kong Racing (dkr-naomi).
 #
-# FASE 0 (ver docs/plan.md): saca los assets de la ROM con las herramientas de la decomp (splat y Torch) y compila
-# todo el código del juego para SH-4. Aún no enlaza un ejecutable: deja en $WORK/port-build/undefined.txt la lista
-# de símbolos que tiene que dar la capa de NAOMI (libultra sobre KallistiOS, segmentos de la ROM).
+# Saca los assets de la ROM con las herramientas de la decomp (splat y Torch), compila el juego para SH-4 con la capa
+# de NAOMI (port/: libultra sobre KallistiOS, el reparto de memoria de N64) y lo empaqueta con dc2naomi (perfil
+# fzerox / fzerox_dbg). Estado y fases: docs/plan.md. Fase 1: arranca y llega a los menús, sin imagen ni sonido.
 #
 # En este repositorio no hay nada con copyright: hace falta tu ROM, F-Zero X (USA) rev0, .z64 (big-endian),
 # MD5 753437d0d8ada1d12f3f9cf0f0a5171f (la que pide la decomp). Vale también el .zip que la contenga sola.
@@ -22,10 +22,17 @@
 #   KOS    árbol de KallistiOS 9926b70a ya parcheado y compilado; si no existe se clona y compila ahí
 #          (vale el de dkr-naomi, $HOME/dkr-build/kos-dkr)                 (por defecto: $WORK/kos-fzx)
 #   JOBS   trabajos en paralelo                                            (por defecto: 4)
+#   D2N    clon de dc2naomi con los perfiles fzerox/fzerox_dbg             (por defecto: ../dc2naomi junto a este repo)
+#   KOS_NAOMI_ENV environ.sh del árbol KOS_SUBARCH=naomi (loader)          (por defecto: /opt/toolchains/dc/kos-naomi/environ.sh)
+#   PROFILE fzerox, o fzerox_dbg (log de KOS en pantalla y diagnóstico)  (por defecto: fzerox)
 set -eo pipefail   # (sin -u: el environ.sh de KallistiOS lee variables sin definir)
 
-ROMIN=$(realpath "${1:?uso: build_fzerox.sh BASEROM.z64}")
+ROMIN=$(realpath "${1:?uso: build_fzerox.sh BASEROM.z64 [OUT.bin]}")
 HERE=$(cd "$(dirname "$0")" && pwd)
+D2N=$(realpath -m "${D2N:-$HERE/../dc2naomi}")
+KOS_NAOMI_ENV=${KOS_NAOMI_ENV:-/opt/toolchains/dc/kos-naomi/environ.sh}
+PROFILE=${PROFILE:-fzerox}
+OUT=$(realpath -m "${2:-$HERE/build/${PROFILE}_dc2naomict.bin}")
 WORK=${WORK:-$HOME/fzx-build}
 KOS=${KOS:-$WORK/kos-fzx}
 JOBS=${JOBS:-4}
@@ -107,12 +114,48 @@ if [ ! -f "$D/.assets_ok" ]; then
     touch "$D/.assets_ok"
 fi
 
-# 3. el código del juego para SH-4 (port/Makefile)
+# 3. nuestros cambios al juego (decomp/fzerox-naomi.patch, todo bajo NAOMI_HOST); si el árbol tiene una versión
+#    anterior del parche, se restaura y se vuelve a aplicar
+DPATCH=$HERE/decomp/fzerox-naomi.patch
+if ! git -C "$D" apply -R --check "$DPATCH" 2>/dev/null; then
+    say "decomp: parche NAOMI_HOST"
+    git -C "$D" checkout -q -- src include
+    git -C "$D" apply "$DPATCH"
+fi
+
+# 4. el juego y la capa de NAOMI (port/Makefile): fzerox.elf, 1ST_READ.BIN, ROM.BIN y AUDIOTBL.BIN
 say "el juego para SH-4"
 source "$KOS/environ.sh"
 B=$WORK/port-build
-rm -f "$B/fallos.txt" "$B/undefined.txt"
+rm -f "$B/fallos.txt"
 make -C "$HERE/port" -j"$JOBS" -k DECOMP="$D" BUILD="$B" || true
-[ ! -s "$B/fallos.txt" ] || { cat "$B/fallos.txt"; fail "$(wc -l < "$B/fallos.txt") ficheros no compilan (avisos y errores: $B/warnings.log)"; }
-[ -s "$B/undefined.txt" ] || fail "no se pudo hacer el enlace parcial ($B/fzerox_game.o)"
-echo "Avisos: $B/warnings.log ($(grep -c 'warning:' "$B/warnings.log" 2>/dev/null || echo 0))"
+[ ! -s "$B/fallos.txt" ] || { cat "$B/fallos.txt"; fail "$(wc -l < "$B/fallos.txt") ficheros no compilan (errores: $B/warnings.log)"; }
+for f in fzerox.elf 1ST_READ.BIN ROM.BIN AUDIOTBL.BIN; do
+    [ -s "$B/$f" ] || fail "no se ha generado $B/$f (enlace: $B/link.log)"
+done
+NM="$KOS_CC_BASE/bin/$KOS_CC_PREFIX-nm"
+printf "_end = 0x%s (el residente empieza en 0x8dc00000), naomi_live en 0x%s\n" \
+    "$("$NM" "$B/fzerox.elf" | awk '/ _end$/{print $1}')" "$("$NM" "$B/fzerox.elf" | awk '/ _naomi_live$/{print $1}')"
+
+# 5. el disco como ficheros (disposición "rebuild" de dc2naomi)
+DISC=$WORK/disc
+rm -rf "$DISC"; mkdir -p "$DISC"
+[ -x "$KOS/utils/makeip/makeip" ] || make -C "$KOS/utils/makeip"
+"$KOS/utils/makeip/makeip" "$HERE/ip.txt" "$DISC/IP.BIN" >/dev/null
+cp "$B/1ST_READ.BIN" "$B/ROM.BIN" "$B/AUDIOTBL.BIN" "$DISC/"
+ls -la "$DISC"
+
+# 6. la imagen de NAOMI (el loader de dc2naomi se compila con el árbol KOS_SUBARCH=naomi)
+say "dc2naomi: $PROFILE -> $OUT"
+[ -f "$D2N/build.sh" ] || fail "D2N=$D2N no es un clon de dc2naomi (con los perfiles fzerox/fzerox_dbg)"
+[ -f "$KOS_NAOMI_ENV" ] || fail "no está $KOS_NAOMI_ENV (KallistiOS con KOS_SUBARCH=naomi, para el loader)"
+mkdir -p "$(dirname "$OUT")"
+(cd "$D2N" && source "$KOS_NAOMI_ENV" && REBUILD=1 ./build.sh "$PROFILE" "$DISC" "$OUT")
+python3 -I - "$OUT" <<'PY'
+import gzip, os, sys
+src = sys.argv[1]; name = os.path.basename(src)
+with open(src + ".gz", "wb") as raw, gzip.GzipFile(filename=name, mode="wb", fileobj=raw, compresslevel=6, mtime=0) as gz:
+    with open(src, "rb") as f:
+        while (b := f.read(1 << 20)): gz.write(b)
+print(src + ".gz", os.path.getsize(src + ".gz"), "bytes")
+PY

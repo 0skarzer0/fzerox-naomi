@@ -6,9 +6,8 @@ No hay ningún port de F-Zero X a Dreamcast: la capa Dreamcast se hace aquí. El
 [dkr-naomi](https://github.com/0skarzer0/dkr-naomi): el juego se compila contra una KallistiOS parcheada para NAOMI
 (`NAOMI_HOST`) y dc2naomi lo empaqueta como imagen de NAOMI.
 
-**Estado: fase 0 hecha** (2026-11-26, ver [docs/plan.md](docs/plan.md)). El script saca los assets de la ROM y compila
-todo el código del juego para SH-4 sin errores; todavía no hay ejecutable. Siguiente: libultra sobre KallistiOS y
-los segmentos, para enlazarlo y arrancarlo en Flycast.
+**Estado: fase 1 hecha** (2026-11-26, ver [docs/plan.md](docs/plan.md)). En Flycast arranca, llega al título y
+con START al menú principal, todavía sin imagen ni sonido (fases 2 y 3). Sin probar en placa.
 
 ## Qué hace falta
 
@@ -26,8 +25,23 @@ Desde un clon con saltos de línea LF (en WSL, no el de Windows):
 ./build_fzerox.sh "/ruta/F-Zero X (USA).z64"
 ```
 
-Opciones en la cabecera del script (`WORK`, `KOS`, `JOBS`). `KOS=$HOME/dkr-build/kos-dkr` reutiliza la KallistiOS ya
-compilada por dkr-naomi (es la misma versión con el mismo parche).
+Deja `build/fzerox_dc2naomict.bin` y `.bin.gz`. El disco lleva `1ST_READ.BIN` (KallistiOS y la capa de NAOMI),
+`ROM.BIN` (código, datos y assets del juego) y `AUDIOTBL.BIN` (las muestras de sonido), que el programa carga en su
+sitio al arrancar. Opciones en la cabecera del script (`WORK`, `KOS`, `JOBS`, `D2N`, `KOS_NAOMI_ENV`, `PROFILE`):
+`KOS=$HOME/dkr-build/kos-dkr` reutiliza la KallistiOS ya compilada por dkr-naomi (misma versión, mismo parche) y
+`PROFILE=fzerox_dbg` saca el log de KallistiOS en pantalla.
+
+Hace falta un clon de dc2naomi con los perfiles `fzerox`/`fzerox_dbg` (`tools/games.py`) junto a este repo o en
+`D2N`, y una KallistiOS con `KOS_SUBARCH=naomi` para el loader (`KOS_NAOMI_ENV`).
+
+## Cómo está hecho
+
+- `port/gen_ld.py`: el script de enlazado, a partir del de KallistiOS y del que genera splat para la decomp. Reproduce
+  la RDRAM de N64 dentro de la RAM del SH-4 y deja todos los segmentos en una "ROM" (`ROM.BIN`).
+- `port/src/ultra.c`: la libultra que usa el juego (hilos, mensajes, DMA, VI, mandos, RSP) sobre KallistiOS
+  (`plat_kos.c`).
+- `decomp/fzerox-naomi.patch`: los cambios al juego, bajo `NAOMI_HOST`.
+- `tools/live_ram.py`: lee de un volcado de RAM de Flycast el log de KallistiOS y variables del juego.
 
 ## Agradecimientos
 

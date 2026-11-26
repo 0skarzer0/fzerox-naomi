@@ -1,0 +1,33 @@
+diff --git a/src/sys/segment.c b/src/sys/segment.c
+index 687f0a5..b7deea3 100644
+--- a/src/sys/segment.c
++++ b/src/sys/segment.c
+@@ -110,7 +110,13 @@ void Arena_StartInit(void) {
+ void Arena_DefaultStartInit(void) {
+ #ifndef EXPANSION_KIT
+     gArenaStartPtrs[0] = ALIGN16((uintptr_t) SEGMENT_VRAM_END(ovl_i10));
++#ifdef NAOMI_HOST
++    // la RDRAM de N64 está en una ventana de la RAM del SH-4 (fzerox-naomi, port/gen_ld.py): 0x803DA800 es
++    // donde empieza framebuffer3
++    gArenaStartPtrs[1] = (uintptr_t) SEGMENT_VRAM_START(framebuffer3);
++#else
+     gArenaStartPtrs[1] = 0x803DA800;
++#endif
+     gArenaStartPtrs[2] = ALIGN16((uintptr_t) D_8024DC80);
+ #else
+     gArenaStartPtrs[0] = ALIGN16((uintptr_t) SEGMENT_VRAM_END(ovl_i10));
+@@ -122,8 +128,14 @@ void Arena_DefaultStartInit(void) {
+ 
+ void Arena_EndInit(void) {
+ #ifndef EXPANSION_KIT
++#ifdef NAOMI_HOST
++    // 0x801D9800 = framebuffer1, 0x803DA800 = framebuffer3 (ver Arena_DefaultStartInit)
++    gArenaEndPtrs[0] = (uintptr_t) SEGMENT_VRAM_START(framebuffer1);
++    gArenaEndPtrs[1] = (uintptr_t) SEGMENT_VRAM_START(framebuffer3);
++#else
+     gArenaEndPtrs[0] = 0x801D9800;
+     gArenaEndPtrs[1] = 0x803DA800;
++#endif
+     gArenaEndPtrs[2] = ALIGN16((uintptr_t) D_8024DC80);
+ #else
+     gArenaEndPtrs[0] = 0x801D9800;

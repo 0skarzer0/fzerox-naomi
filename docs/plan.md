@@ -24,7 +24,7 @@ sirven de consulta: cómo resolvieron el little-endian, los datos de la ROM y el
 0. **Compilar** (este repo): `build_fzerox.sh` saca los assets de la ROM con las herramientas de la decomp y compila
    todo el código del juego para SH-4. Lista de lo que falta para enlazar (libultra, símbolos de segmentos).
 1. **Enlazar y arrancar sin dibujar:** libultra sobre KallistiOS (hilos, colas de mensajes, DMA desde la "ROM",
-   VI, mandos), segmentos y overlays enlazados juntos; log por consola en Flycast.
+   VI, mandos), la memoria de N64 reproducida; log en Flycast. **Hecha** (ver abajo).
 2. **Renderer F3DEX2→PVR:** título y menús.
 3. **Audio.**
 4. **Una carrera en Flycast** y medida en placa (`naomi_med`).
@@ -33,6 +33,63 @@ sirven de consulta: cómo resolvieron el little-endian, los datos de la ROM y el
    en SRAM), perfil de dc2naomi y prueba en placa.
 
 ## Estado
+
+### Fase 1 (2026-11-26): hecha, en Flycast
+
+`build_fzerox.sh ROM [SALIDA.bin]` hace la imagen de NAOMI entera (perfiles `fzerox` / `fzerox_dbg` de dc2naomi).
+En Flycast (BIOS NAOMI, imagen `fzerox_dbg`) el juego arranca, crea sus hilos, llega al **título**
+(`gGameMode = 0x8000`, `GAMEMODE_FLX_TITLE`) y con START pasa al **menú principal** (`0x8007`): el mando llega, el
+juego carga sus overlays con su propia DMA y genera listas de visualización (unas 1 700 tareas de gráficos y 1 900
+de audio en 45 s). No hay imagen (nadie dibuja las listas) ni sonido: fases 2 y 3. **Sin probar en placa.**
+
+**Memoria** (lo más importante de la fase; `port/gen_ld.py`). El juego reparte la RAM de la N64 a mano:
+`sys_gfx.c` pone los búferes de assets "detrás de `buffers`" y `machine_global_gfx` detrás de `ovl_i3`, `segment.c`
+tiene sus arenas hasta direcciones fijas (`0x801D9800`, `0x803DA800`) y los overlays comparten dirección. La primera
+versión, con cada overlay en su sitio, se machacaba el código (`machine_custom_gfx` copiado encima de `save.c`:
+instrucción ilegal en `Sram_ReadWrite`). Ahora se reproduce la N64:
+
+| Zona | Qué | Cómo llega |
+|---|---|---|
+| `0x8c010000` | KallistiOS y la capa de NAOMI (`port/src`) | `1ST_READ.BIN` (217 KB) |
+| `__fzx_n64` (`0x8c050000`, 4 MB + 64 KB) | ventana de RDRAM: cada segmento en su dirección de N64 desplazada (`0x80xxxxxx` → `__fzx_n64 + xxxxxx`), los overlays solapados | `main()` la pone a cero y copia `entry` y `main`; el resto lo copia el juego |
+| `__fzx_rom_start` | la "ROM": los bytes de todos los segmentos en el orden de la ROM de N64 (código, datos y assets) | `ROM.BIN` (5,25 MB) |
+| `audio_table_ROM_START` | las muestras de sonido | `AUDIOTBL.BIN` (10,7 MB) |
+| BSS de KOS y montículo | | `_end` = `0x8d3afee8`: quedan ~8 MB hasta `0x8dc00000` |
+
+- Los assets llevan su dirección segmentada de N64 como VMA y sus bytes en la "ROM". Comprobado: los 198 símbolos
+  con dirección en el nombre (`D_A008000_24A270`...) caen en su dirección de N64.
+- `osVirtualToPhysical`/`osPhysicalToVirtual` valen tal cual: P1 del SH-4 = físico | `0x80000000`, como KSEG0.
+- Las tres direcciones fijas de `segment.c` (las arenas) pasan a `SEGMENT_VRAM_START(framebuffer1/3)` en
+  `decomp/fzerox-naomi.patch` (bajo `NAOMI_HOST`).
+
+**libultra sobre KallistiOS** (`port/src/ultra.c`, con las cabeceras de la decomp; `plat_kos.c`, con las de KOS):
+- Hilos de N64 = hilos de KOS (prioridad KOS = 20 + 255 − la de N64: todos por debajo de los de KOS, incluido el que
+  contesta a la NetDIMM). Colas de mensajes con la semántica de N64 sobre genwait, con `thd_pass()` al despertar a
+  otro (en N64 corre ya si tiene más prioridad) y `thd_schedule(true)` en el vblank (lección de Mario Kart 64).
+- DMA del PI = `memcpy` desde la "ROM" + `arch_icache_sync_range` (puede ser código: overlays). SRAM: búfer de 32 KB
+  sin guardar todavía. 64DD: `osEPiReadIo` dice "no hay disco"; `osMemSize` = 4 MB (sin Expansion Pak).
+- RSP: `osSpTaskStartGo` hace la tarea en el momento (`fzx_gfx_task`/`fzx_audio_task`, vacías) y manda SP (y DP).
+- Mando: el 0 de Dreamcast traducido a N64 en `plat_pad_read` (provisional: A, B, X = C-izq., Y = C-arriba,
+  gatillos = Z/R).
+- Lo que queda en ensamblador en la decomp, en C en `port/src/stubs.c`: `mio0Decode`, `func_800AA6BC` (tamaño
+  MIO0), `guNormalize`, `_Printf`, `__libm_qnan_f`; microcódigos y 64DD como símbolos vacíos.
+
+Trampas de la fase:
+- **El ABI de coma flotante:** esta KOS compila con `-m4-single`; la fase 0 usaba `-m4-single-only`. El juego se
+  compila con los `KOS_CFLAGS` tal cual.
+- **En SH-ELF los símbolos de C llevan `_` delante** (en MIPS no): `gen_ld.py` se lo pone a los del script de splat.
+- **En ld manda la primera regla que encaja:** las de KOS (`*(.text .text.*)`...) iban antes y se llevaban el
+  juego. Los objetos del juego se renombran a `.fzxg.*` (`objcopy --prefix-alloc-sections`).
+- `src/audio/rom/lib/aisetnextbuf.c` (un `osAiSetNextBuffer` propio que escribe los registros del AI) fuera.
+- Los datos, en el orden del fuente (`-fno-data-sections -fno-toplevel-reorder`) y `char` sin signo, como IDO.
+
+Para probar en Flycast (en WSL; la pantalla `:99` puede estar ocupada por otra sesión): `run1.sh` de dc2naomi con
+`DUMP=1` y `FC_PEDALS=1`, y `tools/live_ram.py VOLCADO.ram fzerox.elf gGameMode gPortGfxTasks` para el log de KOS,
+la excepción si la hay y variables del juego.
+
+**Siguiente (fase 2):** dibujar las listas F3DEX2 en `fzx_gfx_task` con la PVR (base: el renderer de Diddy).
+Pendiente de decidir ahí: las texturas que salen de MIO0 están en big-endian y las que están en C (`u16[]`) ya en
+little-endian.
 
 ### Fase 0 (2026-11-26): hecha
 
