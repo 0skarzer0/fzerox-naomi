@@ -25,7 +25,7 @@ sirven de consulta: cómo resolvieron el little-endian, los datos de la ROM y el
    todo el código del juego para SH-4. Lista de lo que falta para enlazar (libultra, símbolos de segmentos).
 1. **Enlazar y arrancar sin dibujar:** libultra sobre KallistiOS (hilos, colas de mensajes, DMA desde la "ROM",
    VI, mandos), la memoria de N64 reproducida; log en Flycast. **Hecha** (ver abajo).
-2. **Renderer F3DEX2→PVR:** título y menús.
+2. **Renderer F3DEX2→PVR:** título y menús. **Hecha, y la carrera ya se ve** (ver abajo).
 3. **Audio.**
 4. **Una carrera en Flycast** y medida en placa (`naomi_med`).
 5. **Rendimiento:** pista y naves por el camino nativo (como gdx-3ds y Diddy), hasta 60 fps o el plan B.
@@ -33,6 +33,50 @@ sirven de consulta: cómo resolvieron el little-endian, los datos de la ROM y el
    en SRAM), perfil de dc2naomi y prueba en placa.
 
 ## Estado
+
+### Fase 2 (2026-11-27): hecha, en Flycast; la carrera ya se ve
+
+En Flycast se ve todo lo que se ha probado: título (logotipo sobre el cómic, "PUSH START"), menú principal,
+dificultad, selección de copa y de circuito, **selección de nave con las 30 naves en 3D**, ajustes de la nave (el
+Blue Falcon en 3D girando) y **la carrera de Mute City**: circuito, cielo, naves, HUD completo (vuelta, posición,
+tiempo, energía, retratos, minimapa) y la cuenta atrás. La nave acelera y gira con el mando. Sin sonido (fase 3) y
+**sin probar en placa**. Los fps de Flycast no valen como medida.
+
+Renderer (`port/src/gfx_rsp.c` + `gfx_pvr.c`, interfaz en `gfx_backend.h`):
+- Intérprete F3DEX2 propio (vale para las variantes "Rej" que usa el juego): pila de matrices, viewport, luces y
+  texgen, recorte por el plano cercano, descarte de caras; RDP: tiles, `LOADBLOCK`/`LOADTILE`/`LOADTLUT` (sin emular la
+  TMEM: se recuerda de qué dirección de RAM sale cada carga), combinador, mezcla, profundidad, rectángulos.
+- Combinador evaluado por vértice con TEXEL0 = 0 y = 1: la PVR hace textura × (f1 − f0) + f0 con color base y
+  desplazado (idea de cruisn-usa-dreamcast, escrita de nuevo).
+- PVR: lista opaca y translúcida en modo presort (en el orden de envío, como la N64); caché de texturas en VRAM
+  (clave: dirección, formato y hash del contenido), todos los formatos de N64 a ARGB1555/4444.
+- Depuración: `gPortTraceFrame`/`gPortTraceMode` trazan un cuadro entero (estados, triángulos, sublistas, matrices,
+  viewport) a `gPortTrace`; `gPortBadDL` guarda la historia de órdenes en la primera desconocida;
+  `gPortDmaLog`/`gPortMio0Log`/`gPortWaitQ` (DMA, descompresiones y en qué cola espera cada hilo); el vigilante de
+  `plat_kos.c` imprime los hilos si el juego deja de avanzar. Se leen con `tools/live_ram.py`.
+
+Trampas de la fase (todas resueltas; las del juego, en `decomp/fzerox-naomi.patch` bajo `NAOMI_HOST`):
+- **Big-endian en el juego:**
+  - `*(s32*) p == 'MIO0'`: en little-endian nunca es cierto y el juego ponía las texturas a cero. Ahora,
+    `MIO0_MAGIC_AT(p)` (byte a byte).
+  - `Mtx`: `Mtx_t` empaqueta dos elementos por palabra de 32 bits (lo usan `guMtxF2L` y `gdSPDefMtx`), pero
+    `math.c`/`camera.c` escriben por `u.i[r][c]`/`u.f[r][c]`. En little-endian ese elemento es el `c ^ 1`:
+    `MTXH(c)` en `gbi.h`.
+- **Segmentos que en la ROM de N64 van en MIO0** y Torch saca descomprimidos (`machine_models`, texturas de
+  circuito, `course_track_gfx`): el juego solo los descomprime y, sin MIO0, dejaba el segmento vacío. Ahora se
+  copian tal cual. `sys_gfx.c` llamaba a `mio0Decode` sin mirar; ahora `mio0Decode` rechaza lo que no es MIO0.
+- **Texturas de 16 bits:** las de C (`u16[]`) están en little-endian y las que salen de MIO0, en big-endian.
+  `mio0Decode` apunta lo que escribe (`fzx_is_mio0`) y una DMA encima lo borra. Las de 8 y 4 bits son bytes.
+- **Planificador de KOS master** (envejece las prioridades): el `while (true) {}` del hilo Idle le quitaba el turno
+  al hilo principal hasta bloquearlo. Ahora el Idle duerme (`fzx_idle`).
+- **Cola del hilo principal llena:** con cuadros largos, los retrazados de VI llenaban sus 16 huecos y se perdían
+  los eventos SP/DP. El juego creía el RSP ocupado y se paraba. El vblank deja 4 huecos.
+- `LOADBLOCK`: `uls`/`ult` son el texel de inicio en la imagen (las tiras de los fondos los usan).
+- Conversión de la matriz: `(s16 << 16) | u16` es `u32` en C; sin `(s32)`, los negativos salían como 65535,x.
+
+Pendiente visto en esta fase: el cartel "GP RACE / RACE n" sale "BAC9D", recuadros magenta en el menú de pausa,
+LOD (`G_BRANCH_Z` siempre al detalle cercano), niebla (sin hacer), tijera (sin hacer). El rendimiento real se mide
+en placa (fases 4 y 5).
 
 ### Fase 1 (2026-11-26): hecha, en Flycast
 

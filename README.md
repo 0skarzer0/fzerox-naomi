@@ -6,8 +6,9 @@ No hay ningún port de F-Zero X a Dreamcast: la capa Dreamcast se hace aquí. El
 [dkr-naomi](https://github.com/0skarzer0/dkr-naomi): el juego se compila contra una KallistiOS parcheada para NAOMI
 (`NAOMI_HOST`) y dc2naomi lo empaqueta como imagen de NAOMI.
 
-**Estado: fase 1 hecha** (2026-11-26, ver [docs/plan.md](docs/plan.md)). En Flycast arranca, llega al título y
-con START al menú principal, todavía sin imagen ni sonido (fases 2 y 3). Sin probar en placa.
+**Estado: fase 2 hecha** (2026-11-27, ver [docs/plan.md](docs/plan.md)). En Flycast se ven el título, los menús, la
+selección de nave en 3D y **la carrera** (Mute City, con HUD y cuenta atrás), y la nave responde al mando. Sin sonido
+(fase 3). Sin probar en placa.
 
 ## Qué hace falta
 
@@ -41,6 +42,7 @@ Hace falta un clon de dc2naomi con los perfiles `fzerox`/`fzerox_dbg` (`tools/ga
 - `port/src/ultra.c`: la libultra que usa el juego (hilos, mensajes, DMA, VI, mandos, RSP) sobre KallistiOS
   (`plat_kos.c`).
 - `decomp/fzerox-naomi.patch`: los cambios al juego, bajo `NAOMI_HOST`.
+- `port/src/gfx_rsp.c` y `gfx_pvr.c`: el renderer (listas F3DEX2 de N64 a la PVR).
 - `tools/live_ram.py`: lee de un volcado de RAM de Flycast el log de KallistiOS y variables del juego.
 
 ## Agradecimientos
