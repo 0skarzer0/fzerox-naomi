@@ -27,9 +27,52 @@ static u32 be32(const u8 *p) {
     return ((u32) p[0] << 24) | ((u32) p[1] << 16) | ((u32) p[2] << 8) | p[3];
 }
 
+/* Registro de lo que ha escrito mio0Decode: esos bytes están en el orden de N64 (big-endian), mientras que los
+ * assets de 16 bits compilados en C (u16[]) están en el del SH-4. El renderer (gfx_rsp.c) lo pregunta para cada
+ * textura de 16 bits; una DMA encima (ultra.c) lo borra. */
+#define MIO0_RANGES 256
+static struct {
+    unsigned lo, hi;
+} sMio0[MIO0_RANGES];
+static int sMio0Next;
+
+void fzx_mio0_forget(const void *p, unsigned n) {
+    unsigned lo = (unsigned) p, hi = lo + n;
+    int i;
+
+    for (i = 0; i < MIO0_RANGES; i++)
+        if (sMio0[i].hi > lo && sMio0[i].lo < hi)
+            sMio0[i].lo = sMio0[i].hi = 0;
+}
+
+int fzx_is_mio0(const void *p, unsigned n) {
+    unsigned lo = (unsigned) p, hi = lo + n;
+    int i;
+
+    for (i = 0; i < MIO0_RANGES; i++)
+        if (lo >= sMio0[i].lo && hi <= sMio0[i].hi)
+            return 1;
+    return 0;
+}
+
+static void mio0_record(const void *p, unsigned n) {
+    fzx_mio0_forget(p, n);
+    sMio0[sMio0Next].lo = (unsigned) p;
+    sMio0[sMio0Next].hi = (unsigned) p + n;
+    sMio0Next = (sMio0Next + 1) % MIO0_RANGES;
+}
+
+unsigned gPortMio0Log[256][3];   /* origen, destino, tamaño de los últimos mio0Decode (depuración) */
+unsigned gPortMio0Count;
+
 void mio0Decode(u8 *src, void *dstv) {
     u8 *dst = dstv;
     u32 size = be32(src + 4);
+    unsigned k = gPortMio0Count++ % 256;
+
+    gPortMio0Log[k][0] = (unsigned) src;
+    gPortMio0Log[k][1] = (unsigned) dst;
+    gPortMio0Log[k][2] = size;
     const u8 *comp = src + be32(src + 8);
     const u8 *raw = src + be32(src + 12);
     const u8 *ctl = src + 16;
@@ -57,6 +100,7 @@ void mio0Decode(u8 *src, void *dstv) {
         bits <<= 1;
         nbits--;
     }
+    mio0_record(dst, size);
 }
 
 /* tamaño descomprimido de un MIO0 (func_800AA6BC: lw $v0, 4($a0)) */

@@ -71,6 +71,11 @@ void plat_block_forever(void) {
         thd_sleep(1000);
 }
 
+/* el bucle del hilo Idle de N64 (decomp/fzerox-naomi.patch, sys_main.c): dormir en vez de girar */
+void fzx_idle(void) {
+    thd_sleep(10);
+}
+
 void plat_sync_code(void *p, unsigned n) {
     if (n)
         arch_icache_sync_range((uintptr_t) p, n);
@@ -194,6 +199,29 @@ static void load_file(const char *path, char *dst, char *end) {
     plat_log("fzx: %s, %u bytes en %p\n", path, (unsigned) want, (void *) dst);
 }
 
+/* Vigilante: si el juego deja de mandar tareas al RSP, imprime una vez la lista de hilos (estado, en qué espera)
+ * al log de KOS. Para depurar bloqueos entre hilos. */
+extern unsigned gPortGfxTasks, gPortAudioTasks;
+
+static void *watchdog(void *p) {
+    unsigned last = 0, stuck = 0, dumped = 0;
+
+    (void) p;
+    for (;;) {
+        unsigned now = gPortGfxTasks + gPortAudioTasks;
+
+        thd_sleep(1000);
+        stuck = (now == last) ? stuck + 1 : 0;
+        last = now;
+        if (stuck >= 3 && !dumped) {
+            plat_log("fzx: el juego no avanza (gfx %u, audio %u): hilos:\n", gPortGfxTasks, gPortAudioTasks);
+            thd_pslist(printf);
+            dumped = 1;
+        }
+    }
+    return NULL;
+}
+
 int main(int argc, char **argv) {
     (void) argc;
     (void) argv;
@@ -203,6 +231,7 @@ int main(int argc, char **argv) {
     load_file("/cd/AUDIOTBL.BIN", audio_table_ROM_START, audio_table_ROM_END);
     load_segment("entry", entry_ROM_START, entry_ROM_END, entry_VRAM);
     load_segment("main", main_ROM_START, main_ROM_END, main_VRAM);
+    thd_create(true, watchdog, NULL);
     bootproc();           /* osInitialize + hilo Idle: a partir de aquí todo corre en los hilos del juego */
     plat_block_forever();
     return 0;

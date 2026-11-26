@@ -1,5 +1,70 @@
+diff --git a/include/macros.h b/include/macros.h
+index 429a175..d69a7cc 100644
+--- a/include/macros.h
++++ b/include/macros.h
+@@ -87,4 +87,11 @@
+ #define OS_MSEC_TO_CYCLES(n)    OS_USEC_TO_CYCLES((n) * 1000LL)
+ #define OS_SEC_TO_CYCLES(n)     OS_MSEC_TO_CYCLES((n) * 1000LL)
+ 
++// "¿empieza por MIO0?": leer la palabra como s32 solo vale en big-endian (fzerox-naomi: el SH-4 es little-endian)
++#ifdef NAOMI_HOST
++#define MIO0_MAGIC_AT(p) (((u8*) (p))[0] == 'M' && ((u8*) (p))[1] == 'I' && ((u8*) (p))[2] == 'O' && ((u8*) (p))[3] == '0')
++#else
++#define MIO0_MAGIC_AT(p) (*(s32*) (p) == (s32) 'MIO0')
++#endif
++
+ #endif // MACROS_H
+diff --git a/src/game/object.c b/src/game/object.c
+index 1dcd568..2b901d0 100644
+--- a/src/game/object.c
++++ b/src/game/object.c
+@@ -82,7 +82,7 @@ u8* TextureCache_LoadCacheTexInfoList_impl(CacheTexInfo* texInfo, bool forceRelo
+                     header = Arena_Allocate(ALLOC_PEEK, headerSize);
+                     CLEAR_DATA_CACHE(header, headerSize);
+                     TextureCache_LoadAssetData(texInfo->segAddr, headerSize, header);
+-                    if (*(s32*) header == (s32) 'MIO0') {
++                    if (MIO0_MAGIC_AT(header)) {
+                         mio0Decode(header, texture);
+                     } else {
+                         bzero(texture, (texInfo->height * alignedWidth) / 2);
+@@ -100,7 +100,7 @@ u8* TextureCache_LoadCacheTexInfoList_impl(CacheTexInfo* texInfo, bool forceRelo
+                     header = Arena_Allocate(ALLOC_PEEK, i);
+                     CLEAR_DATA_CACHE(header, i);
+                     TextureCache_LoadAssetData(texInfo->segAddr, i, header);
+-                    if (*(s32*) header == (s32) 'MIO0') {
++                    if (MIO0_MAGIC_AT(header)) {
+                         mio0Decode(header, texture);
+                     } else {
+                         bzero(texture, texInfo->height * texInfo->width * 2);
+@@ -170,7 +170,7 @@ u8* TextureCache_LoadCacheTexInfoListEK(CacheTexInfo* texInfo, bool singleEntry)
+                     header = Arena_Allocate(ALLOC_PEEK, i);
+                     CLEAR_DATA_CACHE(header, i);
+                     bcopy(texInfo->segAddr, header, i);
+-                    if (*(s32*) header == (s32) 'MIO0') {
++                    if (MIO0_MAGIC_AT(header)) {
+                         mio0Decode(header, texture);
+                     } else {
+                         bzero(texture, texInfo->height * texInfo->width * 2);
+@@ -245,7 +245,7 @@ void* TextureCache_LoadAndCache(void* segAddr, s32 textureSize, bool forceReload
+ 
+             CLEAR_DATA_CACHE(header, textureSize);
+             TextureCache_LoadAssetData(segAddr, textureSize, header);
+-            if (*(s32*) header == (s32) 'MIO0') {
++            if (MIO0_MAGIC_AT(header)) {
+                 mio0Decode(header, texture);
+             } else {
+                 bzero(texture, decodedSize);
+@@ -555,7 +555,7 @@ void TextureCache_ProcessLoadQueue(void) {
+                     header = Arena_Allocate(ALLOC_PEEK, size);
+                     CLEAR_DATA_CACHE(header, size);
+                     TextureCache_LoadAssetData(texInfo->segAddr, size, header);
+-                    if (*(s32*) header == (s32) 'MIO0') {
++                    if (MIO0_MAGIC_AT(header)) {
+                         mio0Decode(header, load->texture);
+                     } else {
+                         bzero(load->texture, texInfo->height * texInfo->width * 2);
 diff --git a/src/sys/segment.c b/src/sys/segment.c
-index 687f0a5..b7deea3 100644
+index 687f0a5..39b9baf 100644
 --- a/src/sys/segment.c
 +++ b/src/sys/segment.c
 @@ -110,7 +110,13 @@ void Arena_StartInit(void) {
@@ -31,3 +96,69 @@ index 687f0a5..b7deea3 100644
      gArenaEndPtrs[2] = ALIGN16((uintptr_t) D_8024DC80);
  #else
      gArenaEndPtrs[0] = 0x801D9800;
+@@ -866,7 +878,7 @@ void Segment_LoadSegment9(void) {
+ #ifdef EXPANSION_KIT
+         }
+ #endif
+-        if (*(s32*) vram == (s32) 'MIO0') {
++        if (MIO0_MAGIC_AT(vram)) {
+             mio0Decode(vram, osPhysicalToVirtual(gSegment22B0A0VramStart));
+         }
+ #ifdef EXPANSION_KIT
+@@ -913,7 +925,7 @@ void Segment_LoadSegment10(void) {
+ 
+     CLEAR_DATA_CACHE(vram, ramSize);
+     Dma_LoadAssets(romOffset, vram, ramSize);
+-    if (*(s32*) vram == (s32) 'MIO0') {
++    if (MIO0_MAGIC_AT(vram)) {
+         mio0Decode(vram, osPhysicalToVirtual(gSegment235130VramStart));
+     }
+     D_800CD2EC = false;
+@@ -956,7 +968,7 @@ void Segment_LoadSegment10CourseEdit(void) {
+ 
+     CLEAR_DATA_CACHE(vram, ramSize);
+     Dma_LoadAssets(romOffset, vram, ramSize);
+-    if (*(s32*) vram == (s32) 'MIO0') {
++    if (MIO0_MAGIC_AT(vram)) {
+         mio0Decode(vram, osPhysicalToVirtual(gSegment235130VramStart));
+     }
+     D_800CD2F0 = -1;
+@@ -991,7 +1003,7 @@ void Segment_LoadSegment5(void) {
+ 
+     CLEAR_DATA_CACHE(vram, ramSize);
+     Dma_LoadAssets(romOffset, vram, ramSize);
+-    if (*(s32*) vram == (s32) 'MIO0') {
++    if (MIO0_MAGIC_AT(vram)) {
+         mio0Decode(vram, osPhysicalToVirtual(gSegment2738A0VramStart));
+     }
+     D_800CD2F4 = false;
+diff --git a/src/sys/sys_main.c b/src/sys/sys_main.c
+index c3e47a1..637580a 100644
+--- a/src/sys/sys_main.c
++++ b/src/sys/sys_main.c
+@@ -59,6 +59,9 @@ OSPiHandle* gDriveRomHandle;
+ #endif
+ 
+ void Idle_ThreadEntry(void*);
++#ifdef NAOMI_HOST
++void fzx_idle(void);
++#endif
+ void Reset_ThreadEntry(void*);
+ 
+ void bootproc(void) {
+@@ -436,7 +439,15 @@ void Idle_ThreadEntry(void* arg0) {
+     }
+     osSetThreadPri(NULL, OS_PRIORITY_IDLE);
+ 
++#ifdef NAOMI_HOST
++    // en KallistiOS el hilo de menos prioridad no debe girar: el planificador envejece las prioridades y el bucle
++    // le quitaría tiempo a los hilos del juego (fzerox-naomi, port/src/plat_kos.c)
++    while (true) {
++        fzx_idle();
++    }
++#else
+     while (true) {}
++#endif
+ }
+ 
+ void LeoReset(void);

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""live_ram.py RAM.bin ELF [SÍMBOLO...]
+"""live_ram.py RAM.bin ELF [SÍMBOLO...] [--str SÍMBOLO]
 
 Lee de un volcado de los 32 MB de RAM (run1.sh de dc2naomi con DUMP=1: la dirección 0x8c000000 + X está en el
 desplazamiento X) el bloque naomi_live del parche NAOMI_HOST de KallistiOS (estado, excepción y el log de lo que ha
@@ -52,7 +52,16 @@ def main():
         log = log[:pos]
     print("---- log de KOS (%d bytes) ----" % pos)
     print(log.decode("latin-1", "replace"))
-    for name in sys.argv[3:]:
+    args = sys.argv[3:]
+    while "--str" in args:
+        k = args.index("--str")
+        name = args[k + 1]
+        del args[k:k + 2]
+        a = s["_" + name]
+        end = ram.index(bytes(1), off(a))
+        print("---- %s ----" % name)
+        print(ram[off(a):end].decode("latin-1"))
+    for name in args:
         a = s.get("_" + name, s.get(name))
         if a is None:
             print("%s: no está en el ELF" % name)

@@ -303,6 +303,8 @@ void osInitialize(void) {
 
 /* ------------------------------------------------------------------ PI: ROM, SRAM y 64DD */
 
+extern void fzx_mio0_forget(const void* p, unsigned n);
+
 static OSPiHandle sCartHandle, sDriveHandle, sLeoHandle;
 static u8 sSram[0x8000];
 
@@ -357,8 +359,17 @@ s32 osEPiWriteIo(OSPiHandle* h, u32 devAddr, u32 data) {
     return 0;
 }
 
+/* registro de las últimas DMA, para depurar (se lee del volcado de RAM: origen, destino, tamaño) */
+u32 gPortDmaLog[1024][3];
+u32 gPortDmaCount;
+
 s32 osEPiStartDma(OSPiHandle* h, OSIoMesg* mb, s32 direction) {
     u8* dram = ptr_of((u32) mb->dramAddr);
+    u32 k = gPortDmaCount++ % 1024;
+
+    gPortDmaLog[k][0] = mb->devAddr;
+    gPortDmaLog[k][1] = (u32) dram;
+    gPortDmaLog[k][2] = mb->size | (direction == OS_READ ? 0 : 0x80000000);
 
     if (h != NULL && h->type == DEVICE_TYPE_SRAM) {
         u32 off = mb->devAddr - 0x08000000;
@@ -375,6 +386,7 @@ s32 osEPiStartDma(OSPiHandle* h, OSIoMesg* mb, s32 direction) {
 
         bcopy(rom, dram, mb->size);
         plat_sync_code(dram, mb->size); /* puede ser código (overlays) */
+        fzx_mio0_forget(dram, mb->size); /* ya no son bytes de un MIO0 (stubs.c) */
     } else {
         plat_log("fzx: escritura por PI a %08x ignorada\n", (unsigned) mb->devAddr);
     }

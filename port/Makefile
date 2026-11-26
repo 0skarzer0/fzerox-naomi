@@ -43,8 +43,8 @@ ASSET_C := $(shell cd $(DECOMP) && find src/assets/us/rev0 -name '*.c' ! -name '
 OBJS    := $(addprefix $(BUILD)/,$(GAME_C:.c=.o) $(ASSET_C:.c=.o))
 
 # La capa de NAOMI: ultra.c con las cabeceras de la decomp, el resto con las de KOS
-PORT_GAMEHDR := ultra
-PORT_KOSHDR  := plat_kos stubs
+PORT_GAMEHDR := ultra gfx_rsp
+PORT_KOSHDR  := plat_kos stubs gfx_pvr
 PORT_OBJS    := $(addprefix $(BUILD)/port/,$(addsuffix .o,$(PORT_GAMEHDR) $(PORT_KOSHDR)))
 
 LD_SCRIPT := $(BUILD)/fzerox_naomi.ld
@@ -57,11 +57,11 @@ $(BUILD)/%.o: $(DECOMP)/%.c
 	@$(CC) $(GAME_CFLAGS) -I$(dir $<) -c $< -o $@ 2>> $(BUILD)/warnings.log || { echo "FALLA $<" | tee -a $(BUILD)/fallos.txt; $(CC) $(GAME_CFLAGS) -I$(dir $<) -c $< -o $@ 2>&1 | grep -m5 error; false; }
 	@$(OBJCOPY) --prefix-alloc-sections=.fzxg $@
 
-$(addprefix $(BUILD)/port/,$(addsuffix .o,$(PORT_GAMEHDR))): $(BUILD)/port/%.o: $(HERE)src/%.c $(HERE)src/plat.h
+$(addprefix $(BUILD)/port/,$(addsuffix .o,$(PORT_GAMEHDR))): $(BUILD)/port/%.o: $(HERE)src/%.c $(HERE)src/plat.h $(HERE)src/gfx_backend.h
 	@mkdir -p $(dir $@)
 	$(CC) $(GAME_CFLAGS) -I$(HERE)src -c $< -o $@
 
-$(addprefix $(BUILD)/port/,$(addsuffix .o,$(PORT_KOSHDR))): $(BUILD)/port/%.o: $(HERE)src/%.c $(HERE)src/plat.h
+$(addprefix $(BUILD)/port/,$(addsuffix .o,$(PORT_KOSHDR))): $(BUILD)/port/%.o: $(HERE)src/%.c $(HERE)src/plat.h $(HERE)src/gfx_backend.h
 	@mkdir -p $(dir $@)
 	$(CC) $(PORT_CFLAGS) -c $< -o $@
 
