@@ -426,7 +426,11 @@ static void vi_vblank(void) {
     sCurFb = sNextFb;
     if (sViMq != NULL && ++sViCount >= sViRetrace) {
         sViCount = 0;
-        osSendMesg(sViMq, sViMsg, OS_MESG_NOBLOCK);
+        /* Si el hilo principal va atrasado (un cuadro largo), los retrazados llenarían su cola y los eventos SP/DP
+         * de osSpTaskStartGo se perderían: el juego creería el RSP ocupado para siempre. Se dejan 4 huecos. */
+        if (sViMq->validCount < sViMq->msgCount - 4) {
+            osSendMesg(sViMq, sViMsg, OS_MESG_NOBLOCK);
+        }
     }
 }
 

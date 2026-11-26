@@ -222,7 +222,7 @@ index ad626fc..9363894 100644
      }
  }
 diff --git a/src/sys/segment.c b/src/sys/segment.c
-index 687f0a5..39b9baf 100644
+index 687f0a5..6b3481b 100644
 --- a/src/sys/segment.c
 +++ b/src/sys/segment.c
 @@ -110,7 +110,13 @@ void Arena_StartInit(void) {
@@ -254,7 +254,7 @@ index 687f0a5..39b9baf 100644
      gArenaEndPtrs[2] = ALIGN16((uintptr_t) D_8024DC80);
  #else
      gArenaEndPtrs[0] = 0x801D9800;
-@@ -866,7 +878,7 @@ void Segment_LoadSegment9(void) {
+@@ -866,9 +878,15 @@ void Segment_LoadSegment9(void) {
  #ifdef EXPANSION_KIT
          }
  #endif
@@ -262,8 +262,16 @@ index 687f0a5..39b9baf 100644
 +        if (MIO0_MAGIC_AT(vram)) {
              mio0Decode(vram, osPhysicalToVirtual(gSegment22B0A0VramStart));
          }
++#ifdef NAOMI_HOST
++        // fzerox-naomi: Torch saca estos segmentos ya descomprimidos (en la ROM de N64 van en MIO0)
++        else {
++            bcopy(vram, osPhysicalToVirtual(gSegment22B0A0VramStart), ramSize);
++        }
++#endif
  #ifdef EXPANSION_KIT
-@@ -913,7 +925,7 @@ void Segment_LoadSegment10(void) {
+     }
+ #endif
+@@ -913,9 +931,15 @@ void Segment_LoadSegment10(void) {
  
      CLEAR_DATA_CACHE(vram, ramSize);
      Dma_LoadAssets(romOffset, vram, ramSize);
@@ -271,8 +279,16 @@ index 687f0a5..39b9baf 100644
 +    if (MIO0_MAGIC_AT(vram)) {
          mio0Decode(vram, osPhysicalToVirtual(gSegment235130VramStart));
      }
++#ifdef NAOMI_HOST
++    // fzerox-naomi: Torch saca estos segmentos ya descomprimidos (en la ROM de N64 van en MIO0)
++    else {
++        bcopy(vram, osPhysicalToVirtual(gSegment235130VramStart), ramSize);
++    }
++#endif
      D_800CD2EC = false;
-@@ -956,7 +968,7 @@ void Segment_LoadSegment10CourseEdit(void) {
+     func_8009CED0(venue);
+ }
+@@ -956,9 +980,15 @@ void Segment_LoadSegment10CourseEdit(void) {
  
      CLEAR_DATA_CACHE(vram, ramSize);
      Dma_LoadAssets(romOffset, vram, ramSize);
@@ -280,8 +296,16 @@ index 687f0a5..39b9baf 100644
 +    if (MIO0_MAGIC_AT(vram)) {
          mio0Decode(vram, osPhysicalToVirtual(gSegment235130VramStart));
      }
++#ifdef NAOMI_HOST
++    // fzerox-naomi: Torch saca estos segmentos ya descomprimidos (en la ROM de N64 van en MIO0)
++    else {
++        bcopy(vram, osPhysicalToVirtual(gSegment235130VramStart), ramSize);
++    }
++#endif
      D_800CD2F0 = -1;
-@@ -991,7 +1003,7 @@ void Segment_LoadSegment5(void) {
+     func_8009CED0(venue);
+ }
+@@ -991,9 +1021,15 @@ void Segment_LoadSegment5(void) {
  
      CLEAR_DATA_CACHE(vram, ramSize);
      Dma_LoadAssets(romOffset, vram, ramSize);
@@ -289,7 +313,15 @@ index 687f0a5..39b9baf 100644
 +    if (MIO0_MAGIC_AT(vram)) {
          mio0Decode(vram, osPhysicalToVirtual(gSegment2738A0VramStart));
      }
++#ifdef NAOMI_HOST
++    // fzerox-naomi: Torch saca estos segmentos ya descomprimidos (en la ROM de N64 van en MIO0)
++    else {
++        bcopy(vram, osPhysicalToVirtual(gSegment2738A0VramStart), ramSize);
++    }
++#endif
      D_800CD2F4 = false;
+ }
+ 
 diff --git a/src/sys/sys_main.c b/src/sys/sys_main.c
 index c3e47a1..637580a 100644
 --- a/src/sys/sys_main.c

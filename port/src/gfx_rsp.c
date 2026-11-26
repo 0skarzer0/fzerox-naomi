@@ -849,6 +849,14 @@ static void do_loadtlut(u32 w0, u32 w1) {
 
 static u32 sUnknown[256];
 
+/* Para depurar listas que se desvían: las últimas 32 órdenes (dirección, w0, w1) y, en la primera orden desconocida,
+ * una copia de esa historia y de la pila de sublistas (gPortBadDL: n.º de cuadro, profundidad, pila[16],
+ * historia[32][3]). */
+static u32 sHist[32][3];
+static u32 sHistPos;
+u32 gPortBadDL[2 + 16 + 32 * 3];
+extern u32 gPortFrames;
+
 static void run_dl(Gfx* dl) {
     Gfx* stack[16];
     s32 sp = 0;
@@ -858,6 +866,10 @@ static void run_dl(Gfx* dl) {
         u32 w0 = dl->words.w0, w1 = dl->words.w1;
         u32 op = w0 >> 24;
 
+        sHist[sHistPos & 31][0] = (u32) dl;
+        sHist[sHistPos & 31][1] = w0;
+        sHist[sHistPos & 31][2] = w1;
+        sHistPos++;
         dl++;
         switch (op) {
             case G_NOOP: case G_SPNOOP: case G_RDPLOADSYNC: case G_RDPPIPESYNC: case G_RDPTILESYNC:
@@ -1082,6 +1094,21 @@ static void run_dl(Gfx* dl) {
                 sCimg = w1;
                 break;
             default:
+                trace(" ?? %08x %08x en %08x sp%d\n", (unsigned) w0, (unsigned) w1, (unsigned) (dl - 1), (int) sp);
+                if (gPortBadDL[0] == 0) {
+                    s32 k;
+
+                    gPortBadDL[0] = gPortFrames + 1;
+                    gPortBadDL[1] = sp;
+                    for (k = 0; k < 16; k++) {
+                        gPortBadDL[2 + k] = k < sp ? (u32) stack[k] : 0;
+                    }
+                    for (k = 0; k < 32; k++) {
+                        gPortBadDL[18 + k * 3 + 0] = sHist[(sHistPos + k) & 31][0];
+                        gPortBadDL[18 + k * 3 + 1] = sHist[(sHistPos + k) & 31][1];
+                        gPortBadDL[18 + k * 3 + 2] = sHist[(sHistPos + k) & 31][2];
+                    }
+                }
                 if (sUnknown[op]++ == 0) {
                     plat_log("fzx: gfx: orden %02x desconocida (%08x %08x)\n", (unsigned) op, (unsigned) w0,
                              (unsigned) w1);
