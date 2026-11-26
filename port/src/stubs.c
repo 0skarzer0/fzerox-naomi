@@ -70,6 +70,12 @@ void mio0Decode(u8 *src, void *dstv) {
     u32 size = be32(src + 4);
     unsigned k = gPortMio0Count++ % 256;
 
+    if (src[0] != 'M' || src[1] != 'I' || src[2] != 'O' || src[3] != '0') {
+        /* el juego lo llama sin mirar en algún sitio (sys_gfx.c, ya parcheado): con datos que no son MIO0 escribiría
+         * a ciegas */
+        plat_log("fzx: mio0Decode de algo que no es MIO0 (%p -> %p)\n", (void *) src, dstv);
+        return;
+    }
     gPortMio0Log[k][0] = (unsigned) src;
     gPortMio0Log[k][1] = (unsigned) dst;
     gPortMio0Log[k][2] = size;

@@ -322,6 +322,26 @@ index 687f0a5..6b3481b 100644
      D_800CD2F4 = false;
  }
  
+diff --git a/src/sys/sys_gfx.c b/src/sys/sys_gfx.c
+index a3b8a0e..2c668b4 100644
+--- a/src/sys/sys_gfx.c
++++ b/src/sys/sys_gfx.c
+@@ -449,6 +449,15 @@ void Game_ThreadEntry(void* entry) {
+                    SEGMENT_VRAM_SIZE(course_track_gfx));
+ #endif
+ 
++#ifdef NAOMI_HOST
++    // fzerox-naomi: Torch saca course_track_gfx ya descomprimido (en la ROM de N64 va en MIO0): se copia tal cual
++    if (!MIO0_MAGIC_AT((uintptr_t) osPhysicalToVirtual(gSegment16C8A0VramStart) +
++                       (size_t) SEGMENT_DATA_SIZE_CONST(course_track_gfx))) {
++        bcopy((void*) ((uintptr_t) osPhysicalToVirtual(gSegment16C8A0VramStart) +
++                       (size_t) SEGMENT_DATA_SIZE_CONST(course_track_gfx)),
++              osPhysicalToVirtual(gSegment16C8A0VramStart), SEGMENT_ROM_SIZE(course_track_gfx));
++    } else
++#endif
+     mio0Decode((uintptr_t) osPhysicalToVirtual(gSegment16C8A0VramStart) +
+                    (size_t) SEGMENT_DATA_SIZE_CONST(course_track_gfx),
+                osPhysicalToVirtual(gSegment16C8A0VramStart));
 diff --git a/src/sys/sys_main.c b/src/sys/sys_main.c
 index c3e47a1..637580a 100644
 --- a/src/sys/sys_main.c

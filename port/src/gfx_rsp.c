@@ -577,7 +577,7 @@ u32 gPortTris;
 /* ---- traza de un cuadro (para depurar): gPortTraceFrame = n.º de cuadro; se lee del volcado de RAM con
  * tools/live_ram.py --str gPortTrace ---- */
 u32 gPortTraceFrame = 0xFFFFFFFF; /* n.º de cuadro a trazar (se cambia para depurar) */
-u32 gPortTraceMode = 0x8008;      /* o: el cuadro 30 después de entrar en este gGameMode (0 = no) */
+u32 gPortTraceMode = 0;        /* o: el cuadro 30 después de entrar en este gGameMode (0 = no) */
 static u32 sModeFrames;
 char gPortTrace[64 * 1024];
 static u32 sTraceLen;
@@ -874,7 +874,7 @@ static void run_dl(Gfx* dl) {
         switch (op) {
             case G_NOOP: case G_SPNOOP: case G_RDPLOADSYNC: case G_RDPPIPESYNC: case G_RDPTILESYNC:
             case G_RDPFULLSYNC: case G_SETKEYGB: case G_SETKEYR: case G_SETCONVERT: case G_SETSCISSOR:
-            case G_LOAD_UCODE: case G_CULLDL: case G_SPECIAL_1: case G_SPECIAL_2: case G_SPECIAL_3:
+            case G_LOAD_UCODE: case G_CULLDL: case G_SPECIAL_1: case G_SPECIAL_2: case G_SPECIAL_3: case G_DMA_IO:
                 break;
             case G_VTX:
                 do_vtx(w0, w1);
@@ -952,6 +952,8 @@ static void run_dl(Gfx* dl) {
                     sVp.sy = vp->vscale[1] / 4.0f;
                     sVp.tx = vp->vtrans[0] / 4.0f;
                     sVp.ty = vp->vtrans[1] / 4.0f;
+                    trace(" VP %08x -> %p: %d %d %d / %d %d %d\n", (unsigned) w1, (void*) p, vp->vscale[0],
+                          vp->vscale[1], vp->vscale[2], vp->vtrans[0], vp->vtrans[1], vp->vtrans[2]);
                 } else if (idx == G_MV_LIGHT) {
                     s32 n = off / 24 - 2;   /* 0 y 1 son LOOKATX/Y */
 
