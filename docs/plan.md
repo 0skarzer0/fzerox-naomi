@@ -75,6 +75,16 @@ gatillos = Z/R.
 
 Pendiente visto: la **demo del título** se ve sin circuito (solo el HUD); la carrera normal sí se ve.
 
+**Primera prueba en placa (2026-11-27, .251):** arranca y se juega (el usuario probó; contadores leídos por la
+NetDIMM con `pk.py`): vblank a 60/s, pero el título iba a **~14 cuadros/s** (fase 5) y **sin sonido**: la cola de
+salida funcionaba (302 s enviados, el HLE solo un 1,5 % de CPU) pero con pico 0, sin secuencias ni bancos cargados.
+Causa: `AudioLoad_Init` pone a cero el contexto de audio (búfer de órdenes, posiciones) y vuelve a crear la cola;
+en N64 el hilo de audio (20) acaba esa inicialización antes de que corra el del juego (10), que nada más arrancar
+encola las secuencias (`Audio_GuitarSeqStart`). En KOS ese orden no está garantizado (prioridades que envejecen, el
+audio se bloquea en sus DMA) y en la placa las órdenes se perdían; en Flycast salía bien por suerte. Arreglos: el hilo
+del juego espera a `gAudioContextInitialized` (`sys_gfx.c`), y `osStartThread` cede el turno a un hilo nuevo con más
+prioridad que el que lo arranca hasta que se bloquea, como en N64. Imagen nueva subida, **sin reprobar**.
+
 ### Fase 2 (2026-11-27): hecha, en Flycast; la carrera ya se ve
 
 En Flycast se ve todo lo que se ha probado: título (logotipo sobre el cómic, "PUSH START"), menú principal,

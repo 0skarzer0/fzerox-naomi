@@ -98,6 +98,21 @@ void osStartThread(OSThread* t) {
     }
     plat_irq_restore(im);
     plat_log("fzx: hilo %d (prioridad %d) en marcha\n", (int) t->id, (int) t->priority);
+    /* Como en N64: si el nuevo tiene más prioridad que el que lo arranca, corre ya, hasta que se bloquea. Sin esto,
+     * en la placa el hilo del juego (10) encolaba las secuencias antes de que el de audio (20) acabara Audio_Init, que
+     * vuelve a crear la cola de órdenes: el aviso se perdía y no sonaba nada (en Flycast el orden salía bien). */
+    {
+        void* self = plat_thread_self();
+
+        for (i = 0; i < MAX_THREADS; i++) {
+            if (sThreads[i].t != NULL && sThreads[i].k == self) {
+                if (t->priority > sThreads[i].t->priority) {
+                    plat_thread_yield_until_blocked(p->kthread);
+                }
+                break;
+            }
+        }
+    }
 }
 
 void osStopThread(OSThread* t) {

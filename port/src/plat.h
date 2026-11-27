@@ -18,6 +18,7 @@ void plat_yield(void);                        /* cede el turno (otro hilo de igu
 /* Hilos. pri es la prioridad de N64 (0..255, más alto = más importante). */
 void *plat_thread_start(void (*entry)(void *), void *arg, int pri, const char *label);
 void plat_thread_set_pri(void *thread, int pri);   /* thread NULL = el actual */
+void plat_thread_yield_until_blocked(void *thread);   /* ceder hasta que ese hilo espere */
 void *plat_thread_self(void);
 void plat_block_forever(void);
 

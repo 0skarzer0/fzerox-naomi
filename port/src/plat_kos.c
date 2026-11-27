@@ -62,6 +62,19 @@ void *plat_thread_start(void (*entry)(void *), void *arg, int pri, const char *l
     return t;
 }
 
+/* N64: osStartThread de un hilo con más prioridad lo pone a correr en el acto, y el que lo arranca no sigue hasta que
+ * el nuevo se bloquea. KOS no cambia de hilo al crearlo: se cede el turno hasta que el nuevo espera (o 200 ms). */
+void plat_thread_yield_until_blocked(void *thread) {
+    kthread_t *t = thread;
+    int i;
+
+    for (i = 0; i < 200 && (t->state == STATE_READY || t->state == STATE_RUNNING); i++) {
+        thd_pass();
+        if (t->state == STATE_READY || t->state == STATE_RUNNING)
+            thd_sleep(1);
+    }
+}
+
 void plat_thread_set_pri(void *thread, int pri) {
     thd_set_prio(thread ? (kthread_t *) thread : thd_get_current(), map_pri(pri));
 }

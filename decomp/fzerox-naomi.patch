@@ -459,10 +459,29 @@ index 687f0a5..6b3481b 100644
  }
  
 diff --git a/src/sys/sys_gfx.c b/src/sys/sys_gfx.c
-index a3b8a0e..2c668b4 100644
+index a3b8a0e..1437e95 100644
 --- a/src/sys/sys_gfx.c
 +++ b/src/sys/sys_gfx.c
-@@ -449,6 +449,15 @@ void Game_ThreadEntry(void* entry) {
+@@ -242,6 +242,18 @@ void Game_ThreadEntry(void* entry) {
+     OSMesg msgBuf[1];
+ 
+     startTime = osGetTime();
++#ifdef NAOMI_HOST
++    // fzerox-naomi: en N64 el hilo de audio (prioridad 20) acaba Audio_Init antes de que corra este (10). En KOS no
++    // está garantizado, y AudioLoad_Init pone a cero la cola de órdenes: las de aquí se perdían (sin sonido en placa)
++    {
++        extern bool gAudioContextInitialized;
++        extern void fzx_idle(void);
++
++        while (!gAudioContextInitialized) {
++            fzx_idle();
++        }
++    }
++#endif
+     Audio_GuitarSeqStart();
+     osRecvMesg(&D_800DCAB0, msgBuf, OS_MESG_BLOCK);
+ 
+@@ -449,6 +461,15 @@ void Game_ThreadEntry(void* entry) {
                     SEGMENT_VRAM_SIZE(course_track_gfx));
  #endif
  
