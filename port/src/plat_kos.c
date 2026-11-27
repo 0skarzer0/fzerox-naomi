@@ -3,6 +3,8 @@
  * Se compila con las cabeceras de KOS, nunca con las de la decomp (ver plat.h).
  */
 #include <kos.h>
+#include <dc/sound/stream.h>
+#include <dc/spu.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -120,8 +122,10 @@ void plat_vblank_install(void (*fn)(void)) {
 #define N64_CLEFT 0x0002
 #define N64_CRIGHT 0x0001
 
-/* Provisional (mando de Dreamcast, para Flycast): A = A (acelerar), B = B (turbo), X = C-izquierda, Y = C-arriba,
- * gatillos = Z y R (inclinarse). El mapa del mueble (volante, pedales, palanca) irá en la fase 6. */
+/* Mando de Dreamcast -> N64: A = A (acelerar), B = B (turbo), X = C-abajo (freno de aire), Y = C-arriba,
+ * C = C-derecha, Z = C-izquierda, gatillos = Z y R (inclinarse), stick y cruceta tal cual. Pensado para el mapa
+ * "fzx" del residente de dc2naomi (DIMM_PAD_FZX), que hace del volante, los pedales, la palanca y START del mueble
+ * de Crazy Taxi el esquema del usuario; con un mando de Dreamcast (Flycast) también sirve. */
 int plat_pad_read(unsigned *n64_buttons, int *stick_x, int *stick_y) {
     maple_device_t *dev = maple_enum_type(0, MAPLE_FUNC_CONTROLLER);
     cont_state_t *st;
@@ -134,8 +138,12 @@ int plat_pad_read(unsigned *n64_buttons, int *stick_x, int *stick_y) {
     }
     if (st->buttons & CONT_A) b |= N64_A;
     if (st->buttons & CONT_B) b |= N64_B;
-    if (st->buttons & CONT_X) b |= N64_CLEFT;
+    /* las C como las manda el mapa "fzx" del residente (DIMM_PAD_FZX): X = C-abajo, Y = C-arriba, C = C-derecha
+     * (y Z = C-izquierda, que el mueble no usa) */
+    if (st->buttons & CONT_X) b |= N64_CDOWN;
     if (st->buttons & CONT_Y) b |= N64_CUP;
+    if (st->buttons & CONT_C) b |= N64_CRIGHT;
+    if (st->buttons & CONT_Z) b |= N64_CLEFT;
     if (st->buttons & CONT_START) b |= N64_START;
     if (st->buttons & CONT_DPAD_UP) b |= N64_UP;
     if (st->buttons & CONT_DPAD_DOWN) b |= N64_DOWN;
@@ -197,6 +205,118 @@ static void load_file(const char *path, char *dst, char *end) {
     if (got <= 0 || got > (ssize_t) want || got + 16 < (ssize_t) want)
         plat_fatal("fzx: %s: leídos %d de %u bytes\n", path, (int) got, (unsigned) want);
     plat_log("fzx: %s, %u bytes en %p\n", path, (unsigned) want, (void *) dst);
+}
+
+/* ---- sonido: el AI de N64 sobre un stream de KOS ----
+ * osAiSetNextBuffer copia cada búfer del juego (estéreo de 16 bits, izquierda primero) en una cola; un hilo
+ * propio rellena el stream del AICA desde ella. El stream va en modo directo (escribimos nosotros en la RAM de
+ * sonido con las store queues): el camino normal de snd_stream usa la DMA de G2, que en la NAOMI no acaba nunca.
+ * osAiGetLength dice lo que queda en la cola menos una reserva, para que el juego (thread.c, que calcula cuánto
+ * generar con eso) mantenga siempre medio búfer del stream de margen. */
+#define AFIFO 8192                  /* cuadros estéreo, potencia de 2 */
+#define ASTREAM_BYTES 4096          /* por canal: 2048 muestras, el stream pide de 1024 en 1024 */
+#define ARESERVE 1280               /* cuadros que el juego no ve en osAiGetLength */
+static uint32_t sAFifo[AFIFO];
+static volatile unsigned sAHead, sATail;
+static snd_stream_hnd_t sAStream = SND_STREAM_INVALID;
+static unsigned sAFreq;
+/* depuración (tools/live_ram.py): huecos, desbordes, cuadros recibidos, pico de amplitud */
+unsigned gPortAudioUnderruns, gPortAudioOverruns, gPortAudioFrames, gPortAudioPeak;
+/* los últimos 4 s de salida, para sacarlos de un volcado de RAM a un WAV (tools/audio_wav.py) */
+#define ACAPTURE (32000 * 4)
+uint32_t gPortAudioCapture[ACAPTURE];
+unsigned gPortAudioCapturePos;
+
+static size_t audio_fill(snd_stream_hnd_t h, uintptr_t left, uintptr_t right, size_t req) {
+    static int16_t bl[2048] __attribute__((aligned(32))), br[2048] __attribute__((aligned(32)));
+    unsigned n = req / 4, avail = sAHead - sATail, tail = sATail, i;
+
+    (void) h;
+    if (n > 2048)
+        n = 2048;
+    for (i = 0; i < n; i++) {
+        uint32_t v = 0;
+
+        if (i < avail)
+            v = sAFifo[(tail + i) & (AFIFO - 1)];
+        bl[i] = (int16_t) (v & 0xFFFF);
+        br[i] = (int16_t) (v >> 16);
+    }
+    if (avail < n)
+        gPortAudioUnderruns++;
+    sATail = tail + (avail < n ? avail : n);
+    spu_memload_sq(left & 0x1FFFFF, bl, n * 2);
+    spu_memload_sq(right & 0x1FFFFF, br, n * 2);
+    return n * 4;
+}
+
+static void *audio_thread(void *p) {
+    (void) p;
+    for (;;) {
+        if (sAStream != SND_STREAM_INVALID)
+            snd_stream_poll(sAStream);
+        thd_sleep(5);
+    }
+    return NULL;
+}
+
+void plat_audio_start(unsigned freq) {
+    static int inited;
+
+    if (freq == sAFreq)
+        return;
+    if (!inited) {
+        if (snd_stream_init_ex(2, 0) < 0) {
+            plat_log("fzx: snd_stream_init_ex falló: sin sonido\n");
+            sAFreq = freq;
+            return;
+        }
+        sAStream = snd_stream_alloc(NULL, ASTREAM_BYTES);
+        if (sAStream == SND_STREAM_INVALID) {
+            plat_log("fzx: snd_stream_alloc falló: sin sonido\n");
+            sAFreq = freq;
+            return;
+        }
+        snd_stream_set_callback_direct(sAStream, audio_fill);
+        thd_create(true, audio_thread, NULL);
+        inited = 1;
+    } else {
+        snd_stream_stop(sAStream);
+    }
+    sAFreq = freq;
+    snd_stream_volume(sAStream, 255);
+    snd_stream_start(sAStream, freq, 1);
+    plat_log("fzx: sonido a %u Hz\n", freq);
+}
+
+void plat_audio_push(const void *buf, unsigned frames) {
+    const uint32_t *src = buf;
+    unsigned head = sAHead, room = AFIFO - (head - sATail), i;
+
+    if (frames > room) {
+        gPortAudioOverruns++;
+        frames = room;
+    }
+    for (i = 0; i < frames; i++) {
+        uint32_t v = src[i];
+        int l = (int16_t) (v & 0xFFFF), r = (int16_t) (v >> 16);
+
+        if (l < 0) l = -l;
+        if (r < 0) r = -r;
+        if ((unsigned) l > gPortAudioPeak) gPortAudioPeak = l;
+        if ((unsigned) r > gPortAudioPeak) gPortAudioPeak = r;
+        sAFifo[(head + i) & (AFIFO - 1)] = v;
+        gPortAudioCapture[gPortAudioCapturePos] = v;
+        gPortAudioCapturePos = (gPortAudioCapturePos + 1) % ACAPTURE;
+    }
+    gPortAudioFrames += frames;
+    sAHead = head + frames;
+}
+
+unsigned plat_audio_pending_frames(void) {
+    unsigned n = sAHead - sATail;
+
+    return n > ARESERVE ? n - ARESERVE : 0;
 }
 
 /* Vigilante: si el juego deja de mandar tareas al RSP, imprime una vez la lista de hilos (estado, en qué espera)

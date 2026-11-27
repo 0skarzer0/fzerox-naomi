@@ -11,8 +11,9 @@
  *   punteros a la ventana de RDRAM; la DMA del PI es un memcpy. La SRAM (partidas) es un búfer de 32 KB (fase 6:
  *   VMU).
  * - VI: el vblank de KOS cambia de imagen y manda el mensaje de retrazado.
- * - RSP: osSpTaskStartGo hace la tarea en el momento (fzx_gfx_task / fzx_audio_task, vacías hasta las fases 2
- *   y 3) y manda los eventos SP (y DP para gráficos).
+ * - RSP: osSpTaskStartGo hace la tarea en el momento (fzx_gfx_task en gfx_rsp.c, fzx_audio_task con el HLE de
+ *   audio_hle.c) y manda los eventos SP (y DP para gráficos).
+ * - AI: la cola de sonido de plat_kos.c.
  */
 #include "global.h"
 #include "plat.h"
@@ -561,19 +562,19 @@ s32 __osMotorAccess(OSPfs* pfs, s32 flag) {
     return PFS_ERR_NOPACK;
 }
 
-/* ------------------------------------------------------------------ AI (fase 3) */
+/* ------------------------------------------------------------------ AI (plat_kos.c) */
 
 s32 osAiSetFrequency(u32 freq) {
+    plat_audio_start(freq);
     return freq;
 }
 
 u32 osAiGetLength(void) {
-    return 0;
+    return plat_audio_pending_frames() * 4;
 }
 
 s32 osAiSetNextBuffer(void* buf, u32 size) {
-    (void) buf;
-    (void) size;
+    plat_audio_push(buf, size / 4);
     return 0;
 }
 
@@ -583,11 +584,12 @@ s32 osAiSetNextBuffer(void* buf, u32 size) {
 void __attribute__((weak)) fzx_gfx_task(OSTask* t) {
     (void) t;
 }
-void __attribute__((weak)) fzx_audio_task(OSTask* t) {
-    (void) t;
+void fzx_audio_task(OSTask* t) {
+    fzx_audio_run((const unsigned*) t->t.data_ptr, t->t.data_size / sizeof(Acmd));
 }
 
 u32 gPortGfxTasks, gPortAudioTasks;
+u32 gPortAudioUs;   /* tiempo total en el HLE de audio (microsegundos): con gPortVblankCount da el % de CPU */
 
 void osSpTaskLoad(OSTask* t) {
     (void) t;
@@ -600,8 +602,11 @@ void osSpTaskStartGo(OSTask* t) {
         post_event(OS_EVENT_SP);
         post_event(OS_EVENT_DP);
     } else {
+        unsigned long long t0 = plat_time_ns();
+
         gPortAudioTasks++;
         fzx_audio_task(t);
+        gPortAudioUs += (u32) ((plat_time_ns() - t0) / 1000);
         post_event(OS_EVENT_SP);
     }
 }

@@ -14,8 +14,8 @@ sirven de consulta: cómo resolvieron el little-endian, los datos de la ROM y el
 - **Versión US rev0**, sin Expansion Kit (64DD).
 - **Renderer:** el de Diddy (combinador, texturas, recorte, mallas nativas, FSAA) con un decodificador F3DEX2 delante.
   F-Zero X usa casi solo el modo de 1 ciclo y ninguna mezcla con `TEXEL1`.
-- **Audio:** HLE del microcódigo de audio en la CPU (`audio_hle.c` de Diddy o `n64_audio_hle.c` de G-Diffuser;
-  comprobar ABI1/ABI2) y salida por `snd_stream`.
+- **Audio:** HLE propio del microcódigo de audio en la CPU (`port/src/audio_hle.c`; ABI de la familia "nead", la de
+  Mario Kart 64 y Zelda, no la de Diddy) y salida por `snd_stream` en modo directo.
 - **60 fps:** el juego hace su lógica a 60 Hz con 30 naves (Diddy a 30 Hz con interpolación). Plan B: lógica a 60 y
   dibujo a 30.
 
@@ -26,13 +26,54 @@ sirven de consulta: cómo resolvieron el little-endian, los datos de la ROM y el
 1. **Enlazar y arrancar sin dibujar:** libultra sobre KallistiOS (hilos, colas de mensajes, DMA desde la "ROM",
    VI, mandos), la memoria de N64 reproducida; log en Flycast. **Hecha** (ver abajo).
 2. **Renderer F3DEX2→PVR:** título y menús. **Hecha, y la carrera ya se ve** (ver abajo).
-3. **Audio.**
+3. **Audio.** **Hecha** en Flycast (ver abajo).
 4. **Una carrera en Flycast** y medida en placa (`naomi_med`).
 5. **Rendimiento:** pista y naves por el camino nativo (como gdx-3ds y Diddy), hasta 60 fps o el plan B.
-6. **Mueble:** mandos (volante, pedales, palanca = Z/R, turbo por combinación), partidas en la VMU (el juego guarda
-   en SRAM), perfil de dc2naomi y prueba en placa.
+6. **Mueble:** mandos (hecho el mapa `fzx`, ver la fase 3; falta probarlo), partidas en la VMU (el juego guarda en
+   SRAM), perfil de dc2naomi y prueba en placa.
 
 ## Estado
+
+### Fase 3 (2026-11-27): hecha, en Flycast; suena
+
+Música y efectos del título y de la carrera. En Flycast la salida (sacada a WAV con `tools/audio_wav.py`) es señal
+continua, sin saturar, al ritmo de 32 kHz (≈31 800 cuadros/s), y el HLE gasta ≈5 % de la CPU (medida de Flycast, no
+vale para la placa: allí, `gPortAudioUs` contra `gPortVblankCount`). **Sin probar en placa.**
+
+- `port/src/audio_hle.c`: las órdenes que usa `synthesis.c` (ADPCM, 8 bits, remuestreo, envolvente y mezcla en
+  seco/húmedo, mezcla, entrelazado, cargas y guardados), con los campos de `include/PR/abi.h`. La "DMEM" es un
+  búfer de 4 KB: muestras en el orden del SH-4 y datos comprimidos byte a byte, así que no hay que dar la vuelta a
+  nada. El remuestreo es una cúbica propia, no la tabla de la consola.
+- Salida (`plat_kos.c`): `osAiSetNextBuffer` copia a una cola y un hilo rellena un stream estéreo de KOS. El stream va
+  en **modo directo** (`snd_stream_set_callback_direct`: escribimos la RAM del AICA con las store queues) porque el
+  camino normal usa la DMA de G2, que en la NAOMI no acaba nunca. `osAiGetLength` dice lo que queda en la cola menos
+  una reserva de 1280 cuadros, y el juego (`thread.c`) ajusta con eso cuánto genera: así queda margen para el stream.
+- Depuración: `gPortAudioCmds`/`Bad`/`Frames`/`Peak`/`Underruns`/`Overruns`/`Us` y los últimos 4 s de salida en
+  `gPortAudioCapture` (`tools/audio_wav.py RAM ELF salida.wav`).
+
+Trampas (todas en `decomp/fzerox-naomi.patch` salvo la primera):
+- **Datos inicializados a cero en `.bss`:** GCC manda ahí `static u8 padding0[8] = {0}`, y el banco de instrumentos
+  compilado (`audio_bank.c`, con desplazamientos fijos) quedaba descuadrado: instrumentos y muestras leídos 8 bytes
+  o más corridos, ninguna nota. La decomp compila con `-fno-zero-initialized-in-bss`; ahora el port también
+  (`GAME_CFLAGS`). Con el sonido, el título espera a la voz y entra en la demo de carrera.
+- **`AudioHeap_AllocPermanent` sin `return`:** en MIPS el puntero sigue en `$v0`; en el SH-4 salía basura y la
+  secuencia apuntaba a `0x3C`. Buscadas todas las funciones así (`-Wreturn-type` con `-c`, no con `-fsyntax-only`,
+  que no lo avisa): las demás cubren todos los casos o nadie usa lo que devuelven.
+- **Órdenes de audio (`AudioCmd`):** se escriben como palabra (`op << 24 | ...`) y se leen como bytes, y los
+  argumentos de 8/16 bits se ponen en la parte alta (`QueueCmdS8`/`U16`). En little-endian van al revés.
+- **`AdsrState.action`:** campos de bits y además `asByte |= 0x10/0x20`; en little-endian el primer campo es el bit 0.
+- **Big-endian en las secuencias:** `gSequenceFontTableData` (bytes con `S16()`, leídos como `u16[]`) y dos lecturas
+  de 16 bits de la secuencia en `seqplayer.c`.
+- El banco no hace falta darlo la vuelta: Torch lo saca como estructuras de C (`Sample`, `Instrument`...).
+
+Mandos del mueble (fase 6 adelantada, **sin probar**): mapa `fzx` del residente de dc2naomi (`DIMM_PAD_FZX`), el
+esquema del usuario: START al soltarlo (si no se usó para otra cosa), palanca abajo = A (acelerar), palanca arriba =
+B+A (turbo), freno = Z, acelerador = R, volante = stick (2,5x en el centro, como MK64); con START pulsado: palanca =
+stick arriba/abajo, freno = C-abajo, acelerador = Z+R, volante a la derecha = C-derecha y a la izquierda =
+C-arriba. El port lee el mando de Dreamcast así: A, B, X = C-abajo, Y = C-arriba, C = C-derecha, Z = C-izquierda,
+gatillos = Z/R.
+
+Pendiente visto: la **demo del título** se ve sin circuito (solo el HUD); la carrera normal sí se ve.
 
 ### Fase 2 (2026-11-27): hecha, en Flycast; la carrera ya se ve
 

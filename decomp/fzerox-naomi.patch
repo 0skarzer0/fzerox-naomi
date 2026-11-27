@@ -34,6 +34,142 @@ index 429a175..d69a7cc 100644
 +#endif
 +
  #endif // MACROS_H
+diff --git a/src/audio/rom/audio_tables.c b/src/audio/rom/audio_tables.c
+index da09609..61750ac 100644
+--- a/src/audio/rom/audio_tables.c
++++ b/src/audio/rom/audio_tables.c
+@@ -2,6 +2,12 @@
+ #include "aseq.h"
+ #include "sfx.h"
+ 
++#ifdef NAOMI_HOST
++// fzerox-naomi: el juego lee gSequenceFontTableData como u16[] (load.c, seqplayer.c): en el orden del SH-4
++#undef S16
++#define S16(x) ((x) & 0xFF), ((x) >> 8)
++#endif
++
+ // clang-format off
+ AudioTable gSoundFontTableData = {
+     { 2, 0, 0, 0 },
+diff --git a/src/audio/rom/lib/audio.h b/src/audio/rom/lib/audio.h
+index ff3f011..4c02e12 100644
+--- a/src/audio/rom/lib/audio.h
++++ b/src/audio/rom/lib/audio.h
+@@ -85,10 +85,18 @@ typedef struct {
+     /* 0x0 */ union {
+         u32 opArgs;
+         struct {
++#ifdef NAOMI_HOST
++            // fzerox-naomi: opArgs = op << 24 | arg0 << 16 | ...; en little-endian el byte alto va el último
++            u8 arg2;
++            u8 arg1;
++            u8 arg0;
++            u8 op;
++#else
+             u8 op;
+             u8 arg0;
+             u8 arg1;
+             u8 arg2;
++#endif
+         };
+     };
+     /* 0x4 */ union {
+@@ -432,10 +440,20 @@ typedef struct SequenceLayer {
+ typedef struct {
+     /* 0x00 */ union {
+         struct A {
++#ifdef NAOMI_HOST
++            // fzerox-naomi: el código usa también asByte con 0x10 (release) y 0x20 (decay); en little-endian
++            // GCC pone el primer campo en el bit 0, así que van al revés
++            u8 : 4;
++            u8 release : 1;
++            u8 decay : 1;
++            u8 hang : 1;
++            u8 unused : 1;
++#else
+             /* 0x00 */ u8 unused : 1;
+             /* 0x00 */ u8 hang : 1;
+             /* 0x00 */ u8 decay : 1;
+             /* 0x00 */ u8 release : 1;
++#endif
+             /* 0x00 */ 
+         } s;
+         /* 0x00 */ u8 asByte;
+diff --git a/src/audio/rom/lib/heap.c b/src/audio/rom/lib/heap.c
+index 40d7cc2..c830695 100644
+--- a/src/audio/rom/lib/heap.c
++++ b/src/audio/rom/lib/heap.c
+@@ -799,6 +799,10 @@ void* AudioHeap_AllocPermanent(s32 tableType, s32 id, size_t size) {
+     gPermanentCache.entries[index].tableType = tableType;
+     gPermanentCache.entries[index].id = id;
+     gPermanentCache.entries[index].size = size;
++#ifdef NAOMI_HOST
++    // fzerox-naomi: el original no tiene return (en MIPS el puntero sigue en $v0 por casualidad)
++    return ramAddr;
++#endif
+ }
+ 
+ void* AudioHeap_AllocTemporarySampleCache(size_t size, s32 fontId, void* sampleAddr, s8 medium) {
+diff --git a/src/audio/rom/lib/seqplayer.c b/src/audio/rom/lib/seqplayer.c
+index d0b3a94..2a55548 100644
+--- a/src/audio/rom/lib/seqplayer.c
++++ b/src/audio/rom/lib/seqplayer.c
+@@ -1284,7 +1284,13 @@ void AudioSeq_SequenceChannelProcessScript(SequenceChannel* channel) {
+ 
+                 case ASEQ_OP_CHAN_LDSEQTOPTR:
+                     cmdArgU16 = (u16) cmdArgs[0];
++#ifdef NAOMI_HOST
++                    // fzerox-naomi: la secuencia está en big-endian (bytes de la ROM)
++                    channel->unkB8 = (seqPlayer->seqData[(u32) (cmdArgU16 + scriptState->value * 2)] << 8) |
++                                     seqPlayer->seqData[(u32) (cmdArgU16 + scriptState->value * 2) + 1];
++#else
+                     channel->unkB8 = *(u16*) (seqPlayer->seqData + (u32) (cmdArgU16 + scriptState->value * 2));
++#endif
+                     break;
+ 
+                 case ASEQ_OP_CHAN_PTRTODYNTBL:
+@@ -1292,7 +1298,13 @@ void AudioSeq_SequenceChannelProcessScript(SequenceChannel* channel) {
+                     break;
+ 
+                 case ASEQ_OP_CHAN_DYNTBLTOPTR:
++#ifdef NAOMI_HOST
++                    // fzerox-naomi: dynTable apunta a la secuencia (big-endian)
++                    channel->unkB8 = ((*channel->dynTable)[scriptState->value][0] << 8) |
++                                     (*channel->dynTable)[scriptState->value][1];
++#else
+                     channel->unkB8 = ((u16*) (channel->dynTable))[scriptState->value];
++#endif
+                     break;
+ 
+                 case ASEQ_OP_CHAN_DYNTBLV:
+diff --git a/src/audio/rom/lib/thread.c b/src/audio/rom/lib/thread.c
+index 5ac346f..a170a84 100644
+--- a/src/audio/rom/lib/thread.c
++++ b/src/audio/rom/lib/thread.c
+@@ -264,13 +264,23 @@ void AudioThread_QueueCmdU32(u32 opArgs, u32 data) {
+ }
+ 
+ void AudioThread_QueueCmdS8(u32 opArgs, s8 data) {
++#ifdef NAOMI_HOST
++    // fzerox-naomi: se lee con asSbyte (el primer byte de la palabra): en little-endian es el bajo
++    u32 uData = (u8) data;
++#else
+     u32 uData = data << 0x18;
++#endif
+ 
+     AudioThread_QueueCmd(opArgs, (void**) &uData);
+ }
+ 
+ void AudioThread_QueueCmdU16(u32 opArgs, u16 data) {
++#ifdef NAOMI_HOST
++    // fzerox-naomi: se lee con asUShort (la primera media palabra): en little-endian es la baja
++    u32 uData = data;
++#else
+     u32 uData = data << 0x10;
++#endif
+ 
+     AudioThread_QueueCmd(opArgs, (void**) &uData);
+ }
 diff --git a/src/game/camera.c b/src/game/camera.c
 index 3ac3ebd..2f245de 100644
 --- a/src/game/camera.c

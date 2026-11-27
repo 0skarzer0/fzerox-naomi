@@ -32,6 +32,14 @@ void plat_vblank_install(void (*fn)(void));   /* fn corre dentro de la interrupc
  * de os_cont.h y stick en -80..80 (arriba positivo). Devuelve 0 si no hay mando. */
 int plat_pad_read(unsigned *n64_buttons, int *stick_x, int *stick_y);
 
+/* Sonido: salida del AI de N64 (estéreo de 16 bits, cuadros de 4 bytes con la izquierda primero) */
+void plat_audio_start(unsigned freq);                  /* osAiSetFrequency; se puede llamar otra vez */
+void plat_audio_push(const void *buf, unsigned frames); /* osAiSetNextBuffer */
+unsigned plat_audio_pending_frames(void);              /* osAiGetLength / 4 */
+
+/* audio_hle.c: el microcódigo de audio (lista de órdenes de 64 bits) */
+void fzx_audio_run(const unsigned *cmd, unsigned n);
+
 /* Log (printf de KOS: consola de dc-tool / log de naomi_live) */
 void plat_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 void plat_fatal(const char *fmt, ...) __attribute__((format(printf, 1, 2), noreturn));

@@ -26,7 +26,7 @@ INC  := -I$(DECOMP)/include -I$(DECOMP)/bin/us/rev0 -I$(DECOMP) -I$(DECOMP)/incl
 #  -fno-data-sections -fno-toplevel-reorder: los datos en el orden del fuente, como IDO (el juego calcula a veces
 #   con la posición relativa de sus variables); -funsigned-char: el char de IDO no tiene signo; gnu89: C de 1996.
 # Los avisos del código de la decomp no se miran (-w).
-GAME_CFLAGS := $(KOS_CFLAGS) -fno-data-sections -fno-toplevel-reorder -fno-strict-aliasing -funsigned-char \
+GAME_CFLAGS := $(KOS_CFLAGS) -fno-data-sections -fno-toplevel-reorder -fno-zero-initialized-in-bss -fno-strict-aliasing -funsigned-char \
                -fno-common -std=gnu89 -w $(DEFS) $(INC)
 PORT_CFLAGS := $(KOS_CFLAGS) -Wall -Wno-unused -I$(HERE)src
 
@@ -44,7 +44,7 @@ OBJS    := $(addprefix $(BUILD)/,$(GAME_C:.c=.o) $(ASSET_C:.c=.o))
 
 # La capa de NAOMI: ultra.c con las cabeceras de la decomp, el resto con las de KOS
 PORT_GAMEHDR := ultra gfx_rsp
-PORT_KOSHDR  := plat_kos stubs gfx_pvr
+PORT_KOSHDR  := plat_kos stubs gfx_pvr audio_hle
 PORT_OBJS    := $(addprefix $(BUILD)/port/,$(addsuffix .o,$(PORT_GAMEHDR) $(PORT_KOSHDR)))
 
 LD_SCRIPT := $(BUILD)/fzerox_naomi.ld

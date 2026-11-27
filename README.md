@@ -6,9 +6,9 @@ No hay ningún port de F-Zero X a Dreamcast: la capa Dreamcast se hace aquí. El
 [dkr-naomi](https://github.com/0skarzer0/dkr-naomi): el juego se compila contra una KallistiOS parcheada para NAOMI
 (`NAOMI_HOST`) y dc2naomi lo empaqueta como imagen de NAOMI.
 
-**Estado: fase 2 hecha** (2026-11-27, ver [docs/plan.md](docs/plan.md)). En Flycast se ven el título, los menús, la
-selección de nave en 3D y **la carrera** (Mute City, con HUD y cuenta atrás), y la nave responde al mando. Sin sonido
-(fase 3). Sin probar en placa.
+**Estado: fase 3 hecha** (2026-11-27, ver [docs/plan.md](docs/plan.md)). En Flycast se ven el título, los menús, la
+selección de nave en 3D y **la carrera** (Mute City, con HUD y cuenta atrás), la nave responde al mando y **suenan
+la música y los efectos**. Mapa de mandos del mueble de Crazy Taxi hecho. Sin probar en placa.
 
 ## Qué hace falta
 
@@ -43,7 +43,9 @@ Hace falta un clon de dc2naomi con los perfiles `fzerox`/`fzerox_dbg` (`tools/ga
   (`plat_kos.c`).
 - `decomp/fzerox-naomi.patch`: los cambios al juego, bajo `NAOMI_HOST`.
 - `port/src/gfx_rsp.c` y `gfx_pvr.c`: el renderer (listas F3DEX2 de N64 a la PVR).
+- `port/src/audio_hle.c`: el microcódigo de audio en la CPU; la salida al AICA, en `plat_kos.c`.
 - `tools/live_ram.py`: lee de un volcado de RAM de Flycast el log de KallistiOS y variables del juego.
+- `tools/audio_wav.py`: saca a un WAV los últimos 4 s de sonido de un volcado de RAM.
 
 ## Agradecimientos
 
@@ -53,4 +55,6 @@ Hace falta un clon de dc2naomi con los perfiles `fzerox`/`fzerox_dbg` (`tools/ga
 - [Zorkats](https://github.com/Zorkats/G-Diffuser) (G-Diffuser, port a PC) y
   [cruxxxxxx](https://github.com/cruxxxxxx/gdx-3ds) (port a 3DS): referencia para el little-endian y el rendimiento.
 - [HarbourMasters](https://github.com/HarbourMasters/Torch) (Torch) y [splat](https://github.com/ethteck/splat).
+- [mupen64plus-rsp-hle](https://github.com/mupen64plus/mupen64plus-rsp-hle): referencia de cómo funciona el
+  microcódigo de audio (el HLE de este repo está escrito de nuevo).
 - [KallistiOS](https://github.com/KallistiOS/KallistiOS).
