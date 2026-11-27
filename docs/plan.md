@@ -180,6 +180,16 @@ Sigue pendiente:
   En Flycast, la miniatura son ~3.750 triángulos por cuadro (el doble que una carrera): la mitad del tiempo en
   dibujarlos y un 12 % en cambios de estado. Medirla en placa (muestreo de PC con `FZX_AUTOPAD_HOLD`, que deja el
   piloto automático quieto en un modo de juego dado tras `FZX_AUTOPAD_EXTRA` pulsaciones de START).
+  **Medido en placa (2026-11-27, noche, contador `-DFZX_FPS`):** Select Course 23, Select Machine 19, ajuste de la
+  nave 55, cuenta atrás 35; carrera sola 60, con 2 naves delante 52, con 23 delante 27-32. En Select Machine: ~3.000
+  triángulos (2.200 tras descartar caras), 5.900 vértices y ~490 cambios de estado por cuadro, 52 ms por cuadro
+  (~17 µs por triángulo; en carrera, ~8). La CPU está bien (200 MHz, caché copy-back: CCR 0x105, bucle de 10 M vueltas
+  en 151 ms). Perfil plano: preparar triángulos (`draw_tri_`, `vtx_outside`, `to_screen_pos`) ~25 %, cambios de
+  estado (`state_update`, `gb_set_state`, combinador, hash de texturas, `fzx_is_mio0`) ~22 %, `do_vtx` 13 %, cola de
+  la PVR 14 %, color por vértice (`to_screen_col`, `pack`/`c8`) 11 %, `run_dl` 8 %. Con `movca.l` en la cola, 19 -> 20.
+  Ideas: no recalcular el estado si no cambió lo que lo forma; no volver a hashear cada cuadro las texturas de la
+  ROM (no cambian); `pack` sin conversiones float->int por canal; ver por qué Select Machine cuesta el doble por
+  triángulo que la carrera. Flycast da tiempos ~1,8 veces menores pero en proporción: sirve para iterar.
 
 ### Fase 2 (2026-11-27): hecha, en Flycast; la carrera ya se ve
 
