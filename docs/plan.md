@@ -190,6 +190,15 @@ Sigue pendiente:
   Ideas: no recalcular el estado si no cambió lo que lo forma; no volver a hashear cada cuadro las texturas de la
   ROM (no cambian); `pack` sin conversiones float->int por canal; ver por qué Select Machine cuesta el doble por
   triángulo que la carrera. Flycast da tiempos ~1,8 veces menores pero en proporción: sirve para iterar.
+  **Primera tanda (e271f17), en placa:** Select Course 33, Select Machine 23, ajustes de la nave 60, cuenta atrás
+  42, carrera con 23 naves delante 39, con 4 delante 55, con 2 delante 60. Lo que más dio: la caché de texturas
+  buscaba en sondeo lineal por sus 768 entradas (saltando huecos) y, llena tras unas carreras, se comía la mitad del
+  cuadro (la pantalla de ajustes había caído a 38): ahora, cubetas encadenadas. Además `ftrv`, el recorte calculado
+  una vez por vértice y el estado sucio solo cuando una orden cambia algo. Probado y descartado: una clave de 84
+  palabras para saltarse estados repetidos (costaba más que lo que ahorraba) y transformar vértices bajo demanda (se
+  usa el 95 % de los cargados). Banco en Flycast: `FZX_AUTOPAD_HOLD=8` (Select Machine) mide `lista` en el log.
+  Siguiente: Select Machine (23) sigue lejos; `to_screen_col`/`pack`, `draw_tri_` y los cambios de estado reales
+  (481 por cuadro: `poly_compile`, `fzx_is_mio0` en `tile_texture`).
 
 ### Fase 2 (2026-11-27): hecha, en Flycast; la carrera ya se ve
 
