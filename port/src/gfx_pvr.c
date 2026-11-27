@@ -387,7 +387,7 @@ void gb_triangle(const GbVert *a, const GbVert *b, const GbVert *c) {
     if (q->n + 4 > QUEUE_UNITS)
         return;
     if (!q->hdr_valid) {
-        q->u[q->n++] = *(const Unit *) &sHdr;
+        memcpy(&q->u[q->n++], &sHdr, sizeof(Unit));
         q->hdr_valid = 1;
     }
     /* los vértices se escriben directamente en la cola (sin uno local y memcpy) */

@@ -339,6 +339,12 @@ extern void fzx_mio0_forget(const void* p, unsigned n);
 static OSPiHandle sCartHandle, sDriveHandle, sLeoHandle;
 static u8 sSram[0x8000];
 
+/* plat_kos.c la carga de la VMU al arrancar y la guarda cuando el juego escribe (plat_sram_written) */
+void* fzx_sram_buffer(u32* size) {
+    *size = sizeof(sSram);
+    return sSram;
+}
+
 static void* ptr_of(u32 a) {
     /* una dirección física de nuestra RAM (0x0C000000-0x0DFFFFFF) pasa a P1 */
     if (a >= 0x0C000000 && a < 0x0E000000) {
@@ -411,6 +417,7 @@ s32 osEPiStartDma(OSPiHandle* h, OSIoMesg* mb, s32 direction) {
             bcopy(&sSram[off], dram, mb->size);
         } else {
             bcopy(dram, &sSram[off], mb->size);
+            plat_sram_written();
         }
     } else if (direction == OS_READ) {
         u8* rom = ptr_of(mb->devAddr);

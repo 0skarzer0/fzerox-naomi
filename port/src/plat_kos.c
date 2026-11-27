@@ -5,6 +5,8 @@
 #include <kos.h>
 #include <dc/sound/stream.h>
 #include <dc/spu.h>
+#include <dc/vmufs.h>
+#include <dc/vmu_pkg.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -346,6 +348,117 @@ unsigned plat_audio_pending_frames(void) {
     return n > ARESERVE ? n - ARESERVE : 0;
 }
 
+/* ---- partidas: la SRAM del cartucho en la VMU ----
+ * F-Zero X guarda récords, fantasmas y lo desbloqueado en la SRAM (32 KB). Al arrancar se carga del fichero
+ * FZEROX.SRM de la VMU (la emulada por el residente de dc2naomi; en la Raspberry, su .vmu); cuando el juego escribe,
+ * un hilo la guarda entera 2 s después de la última escritura (65 bloques de los 200 de la tarjeta). */
+#define SRAM_FILE "FZEROX.SRM"
+static uint8_t *sSramBuf;
+static unsigned sSramSize;
+static volatile int sSramDirty;
+static volatile uint64_t sSramDirtyMs;
+unsigned gPortSramSaves, gPortSramFail;
+
+static maple_device_t *vmu_dev(void) {
+    return maple_enum_type(0, MAPLE_FUNC_MEMCARD);
+}
+
+/* icono de 32x32 a 4 bits: una "X" naranja sobre azul oscuro */
+static void sram_icon(vmu_pkg_t *pkg, uint8_t *icon) {
+    int x, y;
+
+    memset(pkg->icon_pal, 0, sizeof(pkg->icon_pal));
+    pkg->icon_pal[0] = 0xF113;
+    pkg->icon_pal[1] = 0xFF80;
+    for (y = 0; y < 32; y++)
+        for (x = 0; x < 32; x += 2) {
+            int a = (abs(x - y) < 3 || abs(x + y - 31) < 3) ? 1 : 0;
+            int b = (abs(x + 1 - y) < 3 || abs(x + 1 + y - 31) < 3) ? 1 : 0;
+
+            icon[y * 16 + x / 2] = (uint8_t) (a << 4 | b);
+        }
+}
+
+static void sram_save(void) {
+    static uint8_t snap[0x8000], icon[512];
+    maple_device_t *dev = vmu_dev();
+    vmu_pkg_t pkg;
+    uint8_t *out = NULL;
+    int outsize = 0;
+    unsigned im;
+
+    if (dev == NULL || sSramSize > sizeof(snap)) {
+        gPortSramFail++;
+        return;
+    }
+    im = plat_irq_disable();
+    memcpy(snap, sSramBuf, sSramSize);
+    plat_irq_restore(im);
+    memset(&pkg, 0, sizeof(pkg));
+    strcpy(pkg.desc_short, "F-ZERO X");
+    strcpy(pkg.desc_long, "F-ZERO X (NAOMI) SRAM");
+    strcpy(pkg.app_id, "fzerox-naomi");
+    pkg.icon_cnt = 1;
+    pkg.icon_anim_speed = 0;
+    pkg.eyecatch_type = VMUPKG_EC_NONE;
+    sram_icon(&pkg, icon);
+    pkg.icon_data = icon;
+    pkg.data_len = (int) sSramSize;
+    pkg.data = snap;
+    if (vmu_pkg_build(&pkg, &out, &outsize) < 0 || out == NULL) {
+        gPortSramFail++;
+        return;
+    }
+    if (vmufs_write(dev, SRAM_FILE, out, outsize, VMUFS_OVERWRITE) < 0) {
+        gPortSramFail++;
+        plat_log("fzx: no se pudo guardar la SRAM en la VMU (%d bloques libres)\n", vmufs_free_blocks(dev));
+    } else {
+        gPortSramSaves++;
+        plat_log("fzx: SRAM guardada en la VMU (%d bytes)\n", outsize);
+    }
+    free(out);
+}
+
+static void *sram_thread(void *p) {
+    (void) p;
+    for (;;) {
+        thd_sleep(500);
+        if (sSramDirty && timer_ms_gettime64() - sSramDirtyMs >= 2000) {
+            sSramDirty = 0;
+            sram_save();
+        }
+    }
+    return NULL;
+}
+
+void plat_sram_written(void) {
+    sSramDirtyMs = timer_ms_gettime64();
+    sSramDirty = 1;
+}
+
+void plat_sram_attach(void *sram, unsigned size) {
+    maple_device_t *dev = vmu_dev();
+    void *data = NULL;
+    int dsize = 0;
+
+    sSramBuf = sram;
+    sSramSize = size;
+    if (dev != NULL && vmufs_read(dev, SRAM_FILE, &data, &dsize) == 0 && data != NULL) {
+        vmu_pkg_t pkg;
+
+        if (vmu_pkg_parse(data, (size_t) dsize, &pkg) == 0 && pkg.data_len > 0) {
+            memcpy(sram, pkg.data, (unsigned) pkg.data_len < size ? (unsigned) pkg.data_len : size);
+            plat_log("fzx: SRAM cargada de la VMU (%d bytes)\n", pkg.data_len);
+        } else {
+            plat_log("fzx: FZEROX.SRM de la VMU no se entiende: se ignora\n");
+        }
+        free(data);
+    } else {
+        plat_log(dev ? "fzx: sin partida en la VMU\n" : "fzx: no hay VMU: las partidas no se guardarán\n");
+    }
+    thd_create(true, sram_thread, NULL);
+}
+
 /* Vigilante: si el juego deja de mandar tareas al RSP, imprime una vez la lista de hilos (estado, en qué espera)
  * al log de KOS. Para depurar bloqueos entre hilos. */
 extern unsigned gPortGfxTasks, gPortAudioTasks;
@@ -392,6 +505,13 @@ int main(int argc, char **argv) {
     load_segment("entry", entry_ROM_START, entry_ROM_END, entry_VRAM);
     load_segment("main", main_ROM_START, main_ROM_END, main_VRAM);
     thd_create(true, watchdog, NULL);
+    {
+        extern void *fzx_sram_buffer(unsigned *size);
+        unsigned n;
+        void *sram = fzx_sram_buffer(&n);
+
+        plat_sram_attach(sram, n);
+    }
     bootproc();           /* osInitialize + hilo Idle: a partir de aquí todo corre en los hilos del juego */
     plat_block_forever();
     return 0;

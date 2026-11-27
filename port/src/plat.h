@@ -38,6 +38,10 @@ void plat_audio_start(unsigned freq);                  /* osAiSetFrequency; se p
 void plat_audio_push(const void *buf, unsigned frames); /* osAiSetNextBuffer */
 unsigned plat_audio_pending_frames(void);              /* osAiGetLength / 4 */
 
+/* Partidas: la SRAM del cartucho (32 KB) en un fichero de la VMU */
+void plat_sram_attach(void *sram, unsigned size);   /* carga la de la VMU (si hay) y arranca el hilo que guarda */
+void plat_sram_written(void);                       /* el juego ha escrito: guardar dentro de un rato */
+
 /* audio_hle.c: el microcódigo de audio (lista de órdenes de 64 bits) */
 void fzx_audio_run(const unsigned *cmd, unsigned n);
 
