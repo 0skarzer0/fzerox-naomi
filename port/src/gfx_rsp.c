@@ -15,7 +15,9 @@
 #include <stdarg.h>
 
 int vsnprintf(char* buf, size_t n, const char* fmt, va_list ap);
-static void trace(const char* fmt, ...);
+static void trace_(const char* fmt, ...);
+static s32 sTracing;
+#define trace(...) do { if (sTracing) trace_(__VA_ARGS__); } while (0)
 extern s32 gGameMode;
 
 #define SCREEN_SCALE 2.0f   /* 320x240 de N64 -> 640x480 */
@@ -52,7 +54,8 @@ static RVtx sVtx[MAX_VTX];
 /* to_screen de cada vértice cargado, reutilizado entre los triángulos que lo comparten mientras no cambie nada de
  * lo que usa (estado, combinador, tile, viewport): sScrGen sube con cada cambio; sVtxGen[i] = 0 al cargar. */
 static u32 sScrGen = 1;
-static u32 sVtxGen[MAX_VTX];      /* == sScrGen: sScr[i] vale */
+static u32 sVtxGen[MAX_VTX];      /* == sScrGen: posición de sScr[i] vale */
+static u32 sColGen[MAX_VTX];      /* == sScrGen: color de sScr[i] vale */
 static GbVert sScr[MAX_VTX];
 static float sMv[MTX_STACK][4][4];
 static s32 sMvTop;
@@ -93,7 +96,10 @@ typedef struct {
     const u8* addr;
     s32 stride;
     s32 valid;
+    s32 words;   /* LOADBLOCK: palabras de 8 bytes cargadas (0: LOADTILE, solo vale su tmem exacta) */
+    u32 seq;     /* la más reciente gana */
 } Load;
+static u32 sLoadSeq;
 
 static Tile sTiles[8];
 static Load sLoads[8];   /* una por tmem distinta, la última gana */
@@ -230,6 +236,7 @@ static void do_vtx(u32 w0, u32 w1) {
         Vtx_t* v = &src[i].v;
         RVtx* d = &sVtx[v0 + i];
         sVtxGen[v0 + i] = 0;
+        sColGen[v0 + i] = 0;
         float x = v->ob[0], y = v->ob[1], z = v->ob[2];
 
         d->x = x * m[0][0] + y * m[1][0] + z * m[2][0] + m[3][0];
@@ -243,9 +250,9 @@ static void do_vtx(u32 w0, u32 w1) {
             float r, g, b, nm;
             s32 k;
 
-            nm = sqrtf(nx * nx + ny * ny + nz * nz);
+            nm = nx * nx + ny * ny + nz * nz;
             if (nm > 0.0f) {
-                nm = 1.0f / nm;
+                __asm__("fsrra %0" : "+f"(nm));
                 nx *= nm;
                 ny *= nm;
                 nz *= nm;
@@ -262,10 +269,10 @@ static void do_vtx(u32 w0, u32 w1) {
                     b += dp * sLights[k].col[2];
                 }
             }
-            d->r = r > 255.0f ? 1.0f : r / 255.0f;
-            d->g = g > 255.0f ? 1.0f : g / 255.0f;
-            d->b = b > 255.0f ? 1.0f : b / 255.0f;
-            d->a = vn->a / 255.0f;
+            d->r = r > 255.0f ? 1.0f : r * (1.0f / 255.0f);
+            d->g = g > 255.0f ? 1.0f : g * (1.0f / 255.0f);
+            d->b = b > 255.0f ? 1.0f : b * (1.0f / 255.0f);
+            d->a = vn->a * (1.0f / 255.0f);
             if (sGeom & G_TEXTURE_GEN) {
                 float dx = nx * sLookat[0][0] + ny * sLookat[0][1] + nz * sLookat[0][2];
                 float dy = nx * sLookat[1][0] + ny * sLookat[1][1] + nz * sLookat[1][2];
@@ -277,10 +284,10 @@ static void do_vtx(u32 w0, u32 w1) {
                 d->v = v->tc[1] * ts;
             }
         } else {
-            d->r = v->cn[0] / 255.0f;
-            d->g = v->cn[1] / 255.0f;
-            d->b = v->cn[2] / 255.0f;
-            d->a = v->cn[3] / 255.0f;
+            d->r = v->cn[0] * (1.0f / 255.0f);
+            d->g = v->cn[1] * (1.0f / 255.0f);
+            d->b = v->cn[2] * (1.0f / 255.0f);
+            d->a = v->cn[3] * (1.0f / 255.0f);
             d->u = v->tc[0] * ss;
             d->v = v->tc[1] * ts;
         }
@@ -383,16 +390,39 @@ static s32 sCC[2][4], sAC[2][4];
 static s32 sTwoCycle, sUsesTex;
 
 static void combine_compile(void);
+static void poly_compile(void);
+static void tex_scale_update(void);
 
 static void combine_decode(void) {
     u32 w0 = sCombine0, w1 = sCombine1;
     s32 i;
+    static u32 key[5], have;
+    u32 k5[5] = { w0, w1, sPrim, sEnv, sPrimLod | (sOmH & (3 << G_MDSFT_CYCLETYPE)) };
+
+    if (have && key[0] == k5[0] && key[1] == k5[1] && key[2] == k5[2] && key[3] == k5[3] && key[4] == k5[4]) {
+        return;
+    }
+    memcpy(key, k5, sizeof(key));
+    have = 1;
 
     sCC[0][0] = (w0 >> 20) & 0xF; sCC[0][1] = (w1 >> 28) & 0xF; sCC[0][2] = (w0 >> 15) & 0x1F; sCC[0][3] = (w1 >> 15) & 7;
     sAC[0][0] = (w0 >> 12) & 7;   sAC[0][1] = (w1 >> 12) & 7;   sAC[0][2] = (w0 >> 9) & 7;     sAC[0][3] = (w1 >> 9) & 7;
     sCC[1][0] = (w0 >> 5) & 0xF;  sCC[1][1] = (w1 >> 24) & 0xF; sCC[1][2] = w0 & 0x1F;         sCC[1][3] = (w1 >> 6) & 7;
     sAC[1][0] = (w1 >> 21) & 7;   sAC[1][1] = (w1 >> 3) & 7;    sAC[1][2] = (w1 >> 18) & 7;    sAC[1][3] = w1 & 7;
     sTwoCycle = ((sOmH >> G_MDSFT_CYCLETYPE) & 3) == 1;
+#ifdef FZX_TRACE_TEX1
+    {
+        /* depuración: trazar el primer cuadro (después de este) en el que el combinador usa TEXEL1 en carrera */
+        extern s32 gGameMode;
+        extern u32 gPortTex1Req;
+
+        if ((gGameMode & 0xFF) == 1 && (sCC[0][0] == 2 || sCC[0][1] == 2 || sCC[0][2] == 2 || sCC[0][3] == 2 ||
+                                        sAC[0][0] == 2 || sAC[0][1] == 2 || sAC[0][2] == 2 || sAC[0][3] == 2 ||
+                                        (sTwoCycle && (sCC[1][0] == 2 || sCC[1][2] == 2 || sAC[1][0] == 2 || sAC[1][2] == 2)))) {
+            gPortTex1Req++;
+        }
+    }
+#endif
     sPrimC = col_of(sPrim);
     sEnvC = col_of(sEnv);
     sPrimLodF = sPrimLod / 255.0f;
@@ -479,6 +509,99 @@ static void combine_compile(void) {
     sR[R_ZERO] = 0.0f;
     sR[R_ONE] = 1.0f;
     sR[R_PLOD] = sPrimLodF;
+    poly_compile();
+}
+
+/* El combinador como polinomio: con prim/env fijos, cada canal de salida es c0 + cs*s + ct*t + cst*s*t, con s una
+ * componente de la shade (la misma en todo el canal) y t la textura (0 o 1, así que t*t = t). Se calcula una vez por
+ * estado y to_screen hace dos multiplicaciones por canal en vez de evaluar el combinador dos veces. Si un canal no
+ * cabe en esa forma (shade por shade, dos componentes de shade distintas), sPolyOk = 0 y se usa combine_eval. */
+typedef struct {
+    float c0, cs, ct, cst;
+    s32 sv;   /* componente de shade (0..3) o -1 */
+} Poly;
+static Poly sPoly[4];
+static s32 sPolyOk;
+static s32 sPolyBad;
+
+static s32 poly_sv(const Poly* a, const Poly* b) {
+    if (a->sv < 0) {
+        return b->sv;
+    }
+    if (b->sv >= 0 && b->sv != a->sv) {
+        sPolyBad = 1;
+    }
+    return a->sv;
+}
+
+static Poly poly_reg(s32 idx, const Poly* comb) {
+    Poly p = { 0.0f, 0.0f, 0.0f, 0.0f, -1 };
+
+    if (idx >= R_SH && idx < R_SH + 4) {
+        p.cs = 1.0f;
+        p.sv = idx - R_SH;
+    } else if (idx == R_TX) {
+        p.ct = 1.0f;
+    } else if (idx >= R_CB && idx < R_CB + 4) {
+        p = comb[idx - R_CB];
+    } else {
+        p.c0 = sR[idx];
+    }
+    return p;
+}
+
+/* (a - b) * c + d */
+static Poly poly_abcd(const Poly* a, const Poly* b, const Poly* c, const Poly* d) {
+    Poly x, r;
+    s32 xs, cs;
+
+    x.sv = poly_sv(a, b);
+    x.c0 = a->c0 - b->c0;
+    x.cs = a->cs - b->cs;
+    x.ct = a->ct - b->ct;
+    x.cst = a->cst - b->cst;
+    xs = x.cs != 0.0f || x.cst != 0.0f;
+    cs = c->cs != 0.0f || c->cst != 0.0f;
+    if (xs && cs) {
+        sPolyBad = 1;   /* shade por shade */
+    }
+    r.sv = xs ? x.sv : c->sv;
+    r.c0 = x.c0 * c->c0;
+    r.cs = x.c0 * c->cs + x.cs * c->c0;
+    r.ct = x.c0 * c->ct + x.ct * c->c0 + x.ct * c->ct;
+    r.cst = x.c0 * c->cst + x.cst * c->c0 + x.cs * c->ct + x.ct * c->cs + x.ct * c->cst + x.cst * c->ct;
+    if (r.cs == 0.0f && r.cst == 0.0f) {
+        r.sv = -1;
+    }
+    r.sv = poly_sv(&r, d);
+    r.c0 += d->c0;
+    r.cs += d->cs;
+    r.ct += d->ct;
+    r.cst += d->cst;
+    return r;
+}
+
+static void poly_compile(void) {
+    Poly comb[4], out[4];
+    s32 c, ch;
+
+    memset(comb, 0, sizeof(comb));
+    for (ch = 0; ch < 4; ch++) {
+        comb[ch].sv = -1;
+    }
+    sPolyBad = 0;
+    for (c = 0; c < (sTwoCycle ? 2 : 1); c++) {
+        for (ch = 0; ch < 4; ch++) {
+            const u8* i = ch < 3 ? sCi[c][ch] : sAi[c];
+            Poly a = poly_reg(i[0], comb), b = poly_reg(i[1], comb), cc = poly_reg(i[2], comb),
+                 d = poly_reg(i[3], comb);
+
+            out[ch] = poly_abcd(&a, &b, &cc, &d);
+        }
+        memcpy(comb, out, sizeof(comb));
+    }
+    memcpy(sPoly, out, sizeof(sPoly));
+    sPolyOk = !sPolyBad;
 }
 
 static inline void cycle_eval(s32 c, float* o) {
@@ -513,14 +636,24 @@ static Col combine_eval(const Col* shade, float t) {
     return o;
 }
 
+static inline u32 c8(float f) {
+    s32 i = (s32) (f * 255.0f);
+
+    return i < 0 ? 0 : (i > 255 ? 255 : (u32) i);
+}
+
 static u32 pack(float r, float g, float b, float a) {
-    return ((u32) (clamp01(a) * 255.0f) << 24) | ((u32) (clamp01(r) * 255.0f) << 16) |
-           ((u32) (clamp01(g) * 255.0f) << 8) | (u32) (clamp01(b) * 255.0f);
+    return (c8(a) << 24) | (c8(r) << 16) | (c8(g) << 8) | c8(b);
 }
 
 /* ------------------------------------------------------------------ estado para la PVR */
 
 static s32 sStateDirty = 1;
+/* ¿se ha dibujado ya algo con profundidad desde el último borrado del búfer Z? Lo translúcido sin profundidad
+ * dibujado antes (el cielo y las torres del fondo) va a la lista translúcida de la PVR, que se pinta DESPUÉS de la
+ * opaca: sin más, el fondo quedaría por encima de la carretera. Se marca como fondo (gfx_pvr.c lo manda al fondo
+ * del todo con prueba de profundidad). */
+static s32 sSeenZ;
 static GbState sState;
 
 
@@ -530,8 +663,13 @@ static const u8* tile_texture(GbTexture* tx, Tile* t) {
     s32 w, h, bpp;
 
     for (i = 0; i < 8; i++) {
-        if (sLoads[i].valid && sLoads[i].tmem == t->tmem) {
-            ld = &sLoads[i];
+        const Load* l = &sLoads[i];
+
+        /* la carga que empieza en esta tmem, o (LOADBLOCK) la que la contiene: un bloque de 4 KB con 8 fotogramas de
+         * 32x32 y un tile por fotograma, como los efectos de choque y recarga */
+        if (l->valid && (l->tmem == t->tmem || (l->words > 0 && t->tmem > l->tmem && t->tmem < l->tmem + l->words)) &&
+            (ld == NULL || l->seq > ld->seq)) {
+            ld = l;
         }
     }
     if (ld == NULL) {
@@ -548,7 +686,7 @@ static const u8* tile_texture(GbTexture* tx, Tile* t) {
     if (w <= 0 || h <= 0 || w > 1024 || h > 1024) {
         return NULL;
     }
-    tx->addr = ld->addr;
+    tx->addr = ld->addr + (t->tmem - ld->tmem) * 8;
     tx->fmt = t->fmt;
     tx->siz = t->siz;
     tx->width = w;
@@ -611,6 +749,11 @@ static void state_update(void) {
     sState.depth_test = (sGeom & G_ZBUFFER) && (sOmL & Z_CMP);
     sState.depth_write = (sGeom & G_ZBUFFER) && (sOmL & Z_UPD);
     sState.decal = (sOmL & ZMODE_DEC) == ZMODE_DEC;
+    if (sState.depth_test || sState.depth_write) {
+        sSeenZ = 1;
+    }
+    sState.background = sState.blend && !sState.depth_test && !sSeenZ;
+    sState.overlay = !sState.blend && !sState.depth_test && !sState.depth_write && sSeenZ;
     trace("S cc=%06x:%08x om=%06x:%08x g=%06x tex=%d", (unsigned) sCombine0, (unsigned) sCombine1, (unsigned) sOmH,
           (unsigned) sOmL, (unsigned) sGeom, sState.textured);
     if (sState.textured) {
@@ -639,28 +782,98 @@ static void state_update(void) {
         }
         if (diff) {
             sScrGen++;
+            tex_scale_update();
         }
     }
 }
 
 /* ------------------------------------------------------------------ triángulos */
 
-static void to_screen(GbVert* o, const RVtx* v) {
-    float iw = 1.0f / v->w;
-    Col shade = { v->r, v->g, v->b, v->a };
-    Col f0, f1;
+/* shift del tile (0..10: dividir; 11..15: multiplicar) y su origen: se calculan en state_update */
+static float sTexFs = 1.0f, sTexFt = 1.0f, sTexUo, sTexVo;
+
+static void tex_scale_update(void) {
+    Tile* tl = &sTiles[sTexture.tile];
+
+    sTexFs = tl->shifts <= 10 ? 1.0f / (1 << tl->shifts) : (float) (1 << (16 - tl->shifts));
+    sTexFt = tl->shiftt <= 10 ? 1.0f / (1 << tl->shiftt) : (float) (1 << (16 - tl->shiftt));
+    sTexUo = tl->uls / 4.0f;
+    sTexVo = tl->ult / 4.0f;
+}
+
+static inline void to_screen_pos(GbVert* o, const RVtx* v) {
+    float w = v->w < 1e-5f ? 1e-5f : v->w;
+    float iw = 1.0f / w;
 
     o->x = (sVp.tx + v->x * iw * sVp.sx) * SCREEN_SCALE;
     o->y = (sVp.ty - v->y * iw * sVp.sy) * SCREEN_SCALE;
     o->z = iw;
-    {
-        /* shift del tile (0..10: dividir; 11..15: multiplicar) y su origen */
-        Tile* tl = &sTiles[sTexture.tile];
-        float fs = tl->shifts <= 10 ? 1.0f / (1 << tl->shifts) : (float) (1 << (16 - tl->shifts));
-        float ft = tl->shiftt <= 10 ? 1.0f / (1 << tl->shiftt) : (float) (1 << (16 - tl->shiftt));
+    o->u = v->u * sTexFs - sTexUo;
+    o->v = v->v * sTexFt - sTexVo;
+}
 
-        o->u = v->u * fs - tl->uls / 4.0f;
-        o->v = v->v * ft - tl->ult / 4.0f;
+#ifdef FZX_POLYCHECK
+u32 gPortPolyChk[2], gPortPolyBad[8];   /* [0] comprobados, [1] distintos; primer distinto: cc, om, prim, env, nuevo argb/oargb, viejo argb/oargb */
+static void to_screen_col_old(GbVert* o, const RVtx* v);
+static int c8diff(u32 a, u32 b) {
+    int i;
+
+    for (i = 0; i < 32; i += 8) {
+        int d = (int) ((a >> i) & 0xFF) - (int) ((b >> i) & 0xFF);
+
+        if (d > 2 || d < -2)
+            return 1;
+    }
+    return 0;
+}
+static void to_screen_col_new(GbVert* o, const RVtx* v);
+static void to_screen_col(GbVert* o, const RVtx* v) {
+    GbVert t;
+
+    to_screen_col_new(o, v);
+    to_screen_col_old(&t, v);
+    gPortPolyChk[0]++;
+    if (c8diff(o->argb, t.argb) || c8diff(o->oargb, t.oargb)) {
+        if (gPortPolyChk[1]++ == 0) {
+            gPortPolyBad[0] = sCombine0; gPortPolyBad[1] = sCombine1; gPortPolyBad[2] = sPrim; gPortPolyBad[3] = sEnv;
+            gPortPolyBad[4] = o->argb; gPortPolyBad[5] = o->oargb; gPortPolyBad[6] = t.argb; gPortPolyBad[7] = t.oargb;
+        }
+    }
+}
+static void to_screen_col_old(GbVert* o, const RVtx* v) {
+    s32 ok = sPolyOk;
+
+    sPolyOk = 0;
+    to_screen_col_new(o, v);
+    sPolyOk = ok;
+}
+static void to_screen_col_new(GbVert* o, const RVtx* v) {
+#else
+static void to_screen_col(GbVert* o, const RVtx* v) {
+#endif
+    Col shade = { v->r, v->g, v->b, v->a };
+    Col f0, f1;
+
+    if (sPolyOk) {
+        const float* sh = &v->r;
+        float a0[4], d[4];
+        s32 ch;
+
+        for (ch = 0; ch < 4; ch++) {
+            const Poly* p = &sPoly[ch];
+            float s = p->sv >= 0 ? sh[p->sv] : 0.0f;
+
+            a0[ch] = p->c0 + p->cs * s;
+            d[ch] = p->ct + p->cst * s;
+        }
+        if (sState.textured) {
+            o->argb = pack(d[0], d[1], d[2], d[3] > 0.0f ? d[3] : a0[3]);
+            o->oargb = pack(a0[0], a0[1], a0[2], 0.0f);
+        } else {
+            o->argb = pack(a0[0], a0[1], a0[2], a0[3]);
+            o->oargb = 0;
+        }
+        return;
     }
     f0 = combine_eval(&shade, 0.0f);
     if (sState.textured) {
@@ -673,14 +886,42 @@ static void to_screen(GbVert* o, const RVtx* v) {
     }
 }
 
-/* recorte contra el plano cercano (z = -w en el espacio de recorte de N64) */
-static s32 clip_near(const RVtx* in, s32 n, RVtx* out) {
+static void to_screen(GbVert* o, const RVtx* v) {
+    to_screen_pos(o, v);
+    to_screen_col(o, v);
+}
+
+/* recorte contra un plano: el cercano (z = -w en el espacio de recorte de N64; plane 0) o w = W_MIN (plane 1): sin
+ * este, lo que el juego dibuja sin recorte cercano y pasa casi por la cámara (w ~ 0, como un panel del cielo de Mute
+ * City) se proyecta a millones de píxeles y la PVR lo pinta como una sábana blanca */
+#define W_MIN 0.1f
+/* banda de guarda: además, como el RSP, contra |x|, |y| <= GUARD * w (GUARD veces la pantalla): la PVR pinta mal los
+ * vértices a decenas de miles de píxeles (trozos de pista al lado de la cámara: sábanas blancas) */
+#define GUARD 3.0f
+static inline float clip_dist(const RVtx* v, s32 plane) {
+    switch (plane) {
+        case 0: return v->z + v->w;
+        case 1: return v->w - W_MIN;
+        case 2: return GUARD * v->w - v->x;
+        case 3: return GUARD * v->w + v->x;
+        case 4: return GUARD * v->w - v->y;
+        default: return GUARD * v->w + v->y;
+    }
+}
+
+static inline s32 vtx_outside(const RVtx* v) {
+    float g = GUARD * v->w;
+
+    return v->z + v->w < 0.0f || v->w < W_MIN || v->x > g || v->x < -g || v->y > g || v->y < -g;
+}
+
+static s32 clip_plane(const RVtx* in, s32 n, RVtx* out, s32 plane) {
     s32 i, k = 0;
 
     for (i = 0; i < n; i++) {
         const RVtx* a = &in[i];
         const RVtx* b = &in[(i + 1) % n];
-        float da = a->z + a->w, db = b->z + b->w;
+        float da = clip_dist(a, plane), db = clip_dist(b, plane);
 
         if (da >= 0.0f) {
             out[k++] = *a;
@@ -704,6 +945,20 @@ static s32 clip_near(const RVtx* in, s32 n, RVtx* out) {
     return k;
 }
 
+/* in: 3 vértices; out: hasta 9 */
+static s32 clip_near(const RVtx* in, s32 n, RVtx* out) {
+    RVtx a[10], b[10];
+    s32 p;
+
+    n = clip_plane(in, n, a, 0);
+    for (p = 1; p < 6 && n >= 3; p++) {
+        n = clip_plane(a, n, b, p);
+        memcpy(a, b, sizeof(RVtx) * n);
+    }
+    memcpy(out, a, sizeof(RVtx) * (n > 0 ? n : 0));
+    return n;
+}
+
 u32 gPortTris;
 u32 gPortBranchZ[2];   /* G_BRANCH_Z: [0] modelo lejano, [1] cercano */
 
@@ -712,15 +967,21 @@ u32 gPortBranchZ[2];   /* G_BRANCH_Z: [0] modelo lejano, [1] cercano */
 #ifndef FZX_TRACE_FRAME
 #define FZX_TRACE_FRAME 0xFFFFFFFF
 #endif
-u32 gPortTraceFrame = FZX_TRACE_FRAME; /* n.º de cuadro a trazar (se cambia para depurar, o make PORT_EXTRA=-DFZX_TRACE_FRAME=n) */
-u32 gPortTraceMode = 0;        /* o: el cuadro 30 después de entrar en este gGameMode (0 = no) */
+u32 gPortTraceFrame = FZX_TRACE_FRAME;
+u32 gPortTex1Req; /* n.º de cuadro a trazar (se cambia para depurar, o make PORT_EXTRA=-DFZX_TRACE_FRAME=n) */
+#ifndef FZX_TRACE_MODE
+#define FZX_TRACE_MODE 0
+#endif
+u32 gPortTraceMode = FZX_TRACE_MODE;
+#ifndef FZX_TRACE_AT
+#define FZX_TRACE_AT 30   /* cuadro, contado desde que se entra en gPortTraceMode */
+#endif        /* o: el cuadro 30 después de entrar en este gGameMode (0 = no) */
 static u32 sModeFrames;
-char gPortTrace[64 * 1024];
+char gPortTrace[256 * 1024];
 static u32 sTraceLen;
-static s32 sTracing;
 static s32 sTraceTris;
 
-static void trace(const char* fmt, ...) {
+static void trace_(const char* fmt, ...) {
     va_list ap;
     s32 n;
 
@@ -746,8 +1007,8 @@ static void draw_tri(s32 i0, s32 i1, s32 i2) {
 }
 
 static void draw_tri_(s32 i0, s32 i1, s32 i2) {
-    const GbVert* sv[6];
-    GbVert clipv[6];
+    const GbVert* sv[10];
+    GbVert clipv[10];
     s32 n, i;
     float area;
 
@@ -755,9 +1016,9 @@ static void draw_tri_(s32 i0, s32 i1, s32 i2) {
     if (i0 >= MAX_VTX || i1 >= MAX_VTX || i2 >= MAX_VTX) {
         return;
     }
-    if (sVtx[i0].z + sVtx[i0].w < 0.0f || sVtx[i1].z + sVtx[i1].w < 0.0f || sVtx[i2].z + sVtx[i2].w < 0.0f) {
-        /* cruza el plano cercano: el único caso que copia vértices */
-        RVtx in[3], poly[6];
+    if (vtx_outside(&sVtx[i0]) || vtx_outside(&sVtx[i1]) || vtx_outside(&sVtx[i2])) {
+        /* cruza el plano cercano, w = W_MIN o la banda de guarda: el único caso que copia vértices */
+        RVtx in[3], poly[10];
 
         gPortProfClipN++;
         in[0] = sVtx[i0];
@@ -789,14 +1050,7 @@ static void draw_tri_(s32 i0, s32 i1, s32 i2) {
             s32 k = idx[i];
 
             if (sVtxGen[k] != sScrGen) {
-                if (sVtx[k].w < 1e-5f) {
-                    RVtx v = sVtx[k];
-
-                    v.w = 1e-5f;
-                    to_screen(&sScr[k], &v);
-                } else {
-                    to_screen(&sScr[k], &sVtx[k]);
-                }
+                to_screen_pos(&sScr[k], &sVtx[k]);
                 sVtxGen[k] = sScrGen;
             }
             sv[i] = &sScr[k];
@@ -812,11 +1066,24 @@ static void draw_tri_(s32 i0, s32 i1, s32 i2) {
         sCntCull++;
         return;
     }
+    if (sv[0] != &clipv[0]) {
+        /* sin recorte: el color, solo ahora que el triángulo se dibuja (y una vez por vértice y estado) */
+        const s32 idx[3] = { i0, i1, i2 };
+
+        for (i = 0; i < 3; i++) {
+            s32 k = idx[i];
+
+            if (sColGen[k] != sScrGen) {
+                to_screen_col(&sScr[k], &sVtx[k]);
+                sColGen[k] = sScrGen;
+            }
+        }
+    }
     for (i = 1; i + 1 < n; i++) {
         gb_triangle(sv[0], sv[i], sv[i + 1]);
         gPortTris++;
     }
-    if (sTracing && sTraceTris++ < 400) {
+    if (sTracing && sTraceTris++ < 3000) {
         trace(" T (%.0f,%.0f,%.4f) (%.0f,%.0f) (%.0f,%.0f) c=%08x o=%08x uv=%.1f,%.1f\n", sv[0]->x, sv[0]->y,
               sv[0]->z, sv[1]->x, sv[1]->y, sv[2]->x, sv[2]->y, sv[0]->argb, sv[0]->oargb, sv[0]->u, sv[0]->v);
     }
@@ -905,6 +1172,7 @@ static void do_fillrect(u32 w0, u32 w1) {
     u32 cyc = (sOmH >> G_MDSFT_CYCLETYPE) & 3;
 
     if (sCimg == sZimg) {
+        sSeenZ = 0;   /* empieza otra escena (p. ej. la otra mitad de la pantalla partida) */
         return;   /* borrar el búfer de profundidad: la PVR lo hace sola */
     }
     if (cyc == (G_CYC_FILL >> G_MDSFT_CYCLETYPE) || cyc == (G_CYC_COPY >> G_MDSFT_CYCLETYPE)) {
@@ -934,12 +1202,28 @@ static void do_fillrect(u32 w0, u32 w1) {
 
 /* ------------------------------------------------------------------ RDP: texturas */
 
-static void record_load(s32 tmem, const u8* addr, s32 stride) {
+static void record_load(s32 tmem, const u8* addr, s32 stride, s32 words) {
     s32 i, slot = -1;
+    u32 oldest = 0xFFFFFFFF;
 
     for (i = 0; i < 8; i++) {
         if (sLoads[i].valid && sLoads[i].tmem == tmem) {
             slot = i;
+        }
+    }
+    if (slot < 0) {
+        /* sin hueco libre: la más antigua */
+        for (i = 0; i < 8; i++) {
+            if (sLoads[i].valid && sLoads[i].seq < oldest) {
+                oldest = sLoads[i].seq;
+                slot = i;
+            }
+        }
+        for (i = 0; i < 8; i++) {
+            if (!sLoads[i].valid) {
+                slot = i;
+                break;
+            }
         }
     }
     if (slot < 0) {
@@ -957,6 +1241,8 @@ static void record_load(s32 tmem, const u8* addr, s32 stride) {
     sLoads[slot].tmem = tmem;
     sLoads[slot].addr = addr;
     sLoads[slot].stride = stride;
+    sLoads[slot].words = words;
+    sLoads[slot].seq = ++sLoadSeq;
 }
 
 static s32 siz_bytes(s32 siz) {
@@ -972,9 +1258,9 @@ static void do_loadtile(u32 w0, u32 w1) {
 
     if (sTimg.siz == G_IM_SIZ_4b) {
         stride = sTimg.width / 2;
-        record_load(t->tmem, base + (ult >> 2) * stride + (uls >> 2) / 2, stride);
+        record_load(t->tmem, base + (ult >> 2) * stride + (uls >> 2) / 2, stride, 0);
     } else {
-        record_load(t->tmem, base + (ult >> 2) * stride + (uls >> 2) * bpp, stride);
+        record_load(t->tmem, base + (ult >> 2) * stride + (uls >> 2) * bpp, stride, 0);
     }
     t->uls = uls;
     t->ult = ult;
@@ -989,10 +1275,14 @@ static void do_loadblock(u32 w0, u32 w1) {
     const u8* base = resolve(sTimg.addr);
     s32 off = (ult * sTimg.width + uls) * siz_bytes(sTimg.siz);
 
+    s32 texels = ((w1 >> 12) & 0xFFF) - uls + 1;
+    s32 bytes = texels * siz_bytes(sTimg.siz);
+
     if (sTimg.siz == G_IM_SIZ_4b) {
         off = (ult * sTimg.width + uls) / 2;
+        bytes = texels / 2;
     }
-    record_load(t->tmem, base + off, 0);   /* filas de line * 8 bytes, como en la TMEM */
+    record_load(t->tmem, base + off, 0, (bytes + 7) / 8);   /* filas de line * 8 bytes, como en la TMEM */
     sStateDirty = 1;
 }
 
@@ -1043,14 +1333,10 @@ static void run_dl(Gfx* dl) {
             case G_RDPFULLSYNC: case G_SETKEYGB: case G_SETKEYR: case G_SETCONVERT: case G_SETSCISSOR:
             case G_LOAD_UCODE: case G_CULLDL: case G_SPECIAL_1: case G_SPECIAL_2: case G_SPECIAL_3: case G_DMA_IO:
                 break;
-            case G_VTX: {
-                unsigned long long t0 = plat_time_ns();
-
+            case G_VTX:
                 do_vtx(w0, w1);
-                gPortProfVtxNs += plat_time_ns() - t0;
                 gPortProfVtxN += (w0 >> 12) & 0xFF;
                 break;
-            }
                 break;
             case G_TRI1:
                 draw_tri(((w0 >> 16) & 0xFF) / 2, ((w0 >> 8) & 0xFF) / 2, (w0 & 0xFF) / 2);
@@ -1065,6 +1351,7 @@ static void run_dl(Gfx* dl) {
                 if (v < MAX_VTX) {
                     if (where == G_MWO_POINT_RGBA) {
                         sVtxGen[v] = 0;
+                        sColGen[v] = 0;
                         sVtx[v].r = (w1 >> 24) / 255.0f;
                         sVtx[v].g = ((w1 >> 16) & 0xFF) / 255.0f;
                         sVtx[v].b = ((w1 >> 8) & 0xFF) / 255.0f;
@@ -1333,8 +1620,19 @@ void fzx_gfx_task(OSTask* t) {
     sStateDirty = 1;
     bzero(sLoads, sizeof(sLoads));
     gb_frame_begin(0xFF000000);
-    sModeFrames = (gPortTraceMode != 0 && (u32) gGameMode == gPortTraceMode) ? sModeFrames + 1 : 0;
-    sTracing = (gPortFrames == gPortTraceFrame) || sModeFrames == 30;
+    sSeenZ = 0;
+    sModeFrames = (gPortTraceMode != 0 && ((u32) gGameMode & 0xFF) == gPortTraceMode) ? sModeFrames + 1 : 0;
+    sTracing = (gPortFrames == gPortTraceFrame) || sModeFrames == FZX_TRACE_AT;
+#ifdef FZX_TRACE_TEX1
+    {
+        static u32 done;
+
+        if (gPortTex1Req > 0 && !done) {
+            sTracing = 1;
+            done = 1;
+        }
+    }
+#endif
     sCntTri = sCntClip = sCntCull = sCntVtx = sCntMtx = 0;
     sTraceTris = 0;
     if (sTracing) {

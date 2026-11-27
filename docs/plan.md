@@ -128,6 +128,50 @@ Más arreglos de la misma noche:
 Pendiente: en pausa la nave se ve celeste y medio transparente; niebla y tijera (`gDPSetScissor`: la animación del
 menú de pausa y la pantalla partida de VS) sin hacer; medir en placa y probar los mandos `fzx` y la VMU.
 
+**Segunda prueba en placa (2026-11-27, mañana):** menú principal y música bien; la selección de nave lentísima
+(~18 cuadros/s: 52 ms de lista); en carrera lento pero jugable; sin sonido de turbo; el fondo se veía a través de la
+carretera; la barra de energía negra; el choque y la recarga, un cuadrado/rombo con un dibujo.
+
+Medido en la placa con el muestreo de PC (bajado por la NetDIMM con `pk.py` a trozos de 2048 palabras; **ojo**: al
+leerlo hay que conservar todas las palabras, un filtro que se salte una cambia PC por PR): en la placa no quedaba
+nada libre y un tercio se iba en el **color por vértice** (`combine_eval` x2 + `pack` + `to_screen`, ~950
+instrucciones por vértice), un 14 % en `do_vtx` y un 8 % en recompilar el combinador. En Flycast esas pantallas iban
+sobradas: Flycast no sirve para medir esto.
+- El combinador se compila por estado a un **polinomio** por canal, `c0 + cs·s + ct·t + cst·s·t` (s, una componente
+  de la shade; t, la textura, 0 o 1): el color de cada vértice son dos multiplicaciones por canal. Lo que no cabe
+  (shade por shade, dos componentes distintas) sigue por `combine_eval`. `make PORT_EXTRA=-DFZX_POLYCHECK` calcula
+  los dos y cuenta diferencias (`gPortPolyChk`): 0 en 4,5 millones de vértices, título, demo y carrera.
+- `pack` sin conversiones a `unsigned` (en el SH-4 son rutinas largas); `do_vtx` multiplica por 1/255 y normaliza
+  con `fsrra`; el color solo de los triángulos que no se descartan; el combinador no se recompila si no cambió;
+  `trace()` es una macro (sin llamada si no se traza); fuera el cronómetro por `G_VTX`.
+Resultado en la placa (demo del título): lista 17,5 -> 10,7 ms, la de 1 jugador a 60 cuadros/s y un 72 % de CPU
+libre en la mezcla de título y demo. La selección de nave, sin volver a medir.
+
+Lo visto en la carrera (todo comprobado en Flycast con el piloto automático, `FZX_AUTOPAD`, que ahora pulsa START él
+solo hasta llegar a la carrera; trazas de un cuadro con `-DFZX_TRACE_MODE=1 -DFZX_TRACE_AT=n`):
+- **Fondo a través de la carretera:** el cielo y las torres son translúcidos, sin Z y se dibujan los primeros; en la
+  PVR la lista translúcida va después de la opaca y quedaban encima. Lo translúcido sin Z dibujado antes que nada con
+  Z (`GbState.background`) va con Z casi infinita (2e-8; el plano de fondo de la PVR, a 1e-8) y prueba GEQUAL: lo
+  opaco lo tapa.
+- **Barra de energía negra:** la barra (rectángulos opacos) se dibujaba bien, pero el marco "ENERGY", translúcido y
+  anterior en la N64, la tapaba al ir en la lista translúcida. Lo opaco sin Z dibujado después de lo 3D
+  (`GbState.overlay`: el HUD) va también a la lista translúcida, sin mezclar (ONE/ZERO), y conserva el orden.
+- **Choque y recarga:** el efecto carga 4 KB de una vez (8 fotogramas de 32x32) y dibuja cada fotograma con su tile;
+  solo se encontraba la carga si el tile empezaba justo en su TMEM, y los demás cogían una textura vieja (la de un
+  panel a rayas). Ahora un tile dentro de un `LOADBLOCK` toma su trozo (`Load.words`, la carga más reciente gana).
+  Las chispas y la explosión ya se ven; la burbuja de recarga, sin ver (probablemente la misma causa).
+- **Recorte:** además del plano cercano, contra w >= 0,1 y una banda de guarda de 3 pantallas, como el RSP: la PVR
+  pinta mal vértices a decenas de miles de píxeles.
+
+Sigue pendiente:
+- **Sin sonido de turbo.** Las notas sí salen: con un registro temporal de notas, el turbo (`NA_SE_7`, canal 10 del
+  reproductor 0, instrumento 7) reparte sus notas como los demás efectos, sin fallos de asignación, con una muestra
+  ADPCM en RAM (en el montón de audio, `medium` 0) de aspecto válido. No se pudo comprobar si se oye: silenciar los
+  demás canales deja el título esperando para siempre. Siguiente paso: grabar (`audio_wav.py`) solo la nota del
+  instrumento 7 (por ejemplo, anotando el número de nota en el HLE) para ver si el ADPCM o la envolvente la dejan en 0.
+- Un **panel blanco** sobre la pista de Mute City en algunos tramos (también en la versión de anoche); sin encontrar.
+- La selección de nave, medirla otra vez en placa.
+
 ### Fase 2 (2026-11-27): hecha, en Flycast; la carrera ya se ve
 
 En Flycast se ve todo lo que se ha probado: título (logotipo sobre el cómic, "PUSH START"), menú principal,

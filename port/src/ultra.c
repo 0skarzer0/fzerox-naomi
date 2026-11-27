@@ -534,12 +534,19 @@ void osContGetReadData(OSContPad* pads) {
             extern int gPortPcProfOn;
             static unsigned starts, prev, n;
 
+            static unsigned t;
+
+            /* fuera de carrera, pasado el arranque, pulsa START él solo (5 cuadros de cada 60) hasta llegar */
+            t++;
+            if ((gGameMode & 0xFF) != 1 && t > 1500 && t % 60 < 5) {
+                buttons |= START_BUTTON;
+            }
             if ((buttons & START_BUTTON) && !(prev & START_BUTTON)) {
                 starts++;
             }
             prev = buttons;
             gPortPcProfOn = 0;   /* el muestreo de PC, solo en carrera */
-            if (starts >= 10 && (gGameMode & 0xFF) == 1) {
+            if ((gGameMode & 0xFF) == 1) {
                 gPortPcProfOn = 1;
                 n++;
                 buttons |= A_BUTTON;

@@ -308,6 +308,11 @@ static TexEntry *tex_get_hashed(const GbTexture *t) {
 
 /* ------------------------------------------------------------------ estado y cabeceras */
 
+/* profundidad (1/w) del plano de fondo de la PVR y de lo que se marca como fondo (GbState.background): más lejos
+ * que lo más lejano del juego (1/w ~ 1e-5), y el fondo por delante del plano para pasar la prueba GEQUAL */
+#define BG_PLANE_Z 1e-8f
+#define BG_Z 2e-8f
+
 static GbState sState;
 static TexEntry *sCurTex;
 static int sCurList;
@@ -338,7 +343,7 @@ void gb_set_state(const GbState *st) {
     sStateValid = 1;
     sState = *st;
     sCurTex = st->textured ? tex_get(&st->tex) : NULL;
-    list = st->blend ? 1 : 0;
+    list = (st->blend || st->overlay) ? 1 : 0;
     sCurList = list;
     if (sCurTex) {
         pvr_poly_cxt_txr(&cxt, list ? PVR_LIST_TR_POLY : PVR_LIST_OP_POLY, sCurTex->pvrfmt | PVR_TXRFMT_TWIDDLED,
@@ -354,12 +359,12 @@ void gb_set_state(const GbState *st) {
     cxt.gen.shading = PVR_SHADE_GOURAUD;
     cxt.gen.culling = PVR_CULLING_NONE;
     cxt.gen.specular = (sCurTex && st->use_offset) ? PVR_SPECULAR_ENABLE : PVR_SPECULAR_DISABLE;
-    cxt.depth.comparison = st->depth_test ? PVR_DEPTHCMP_GEQUAL : PVR_DEPTHCMP_ALWAYS;
-    cxt.depth.write = st->depth_write ? PVR_DEPTHWRITE_ENABLE : PVR_DEPTHWRITE_DISABLE;
+    cxt.depth.comparison = (st->depth_test || st->background) ? PVR_DEPTHCMP_GEQUAL : PVR_DEPTHCMP_ALWAYS;
+    cxt.depth.write = (st->depth_write && !st->background) ? PVR_DEPTHWRITE_ENABLE : PVR_DEPTHWRITE_DISABLE;
     if (list) {
         cxt.gen.alpha = PVR_ALPHA_ENABLE;
-        cxt.blend.src = PVR_BLEND_SRCALPHA;
-        cxt.blend.dst = st->blend == 2 ? PVR_BLEND_ONE : PVR_BLEND_INVSRCALPHA;
+        cxt.blend.src = st->blend ? PVR_BLEND_SRCALPHA : PVR_BLEND_ONE;
+        cxt.blend.dst = st->blend == 2 ? PVR_BLEND_ONE : (st->blend ? PVR_BLEND_INVSRCALPHA : PVR_BLEND_ZERO);
         if (sCurTex)
             cxt.txr.alpha = PVR_TXRALPHA_ENABLE;
     }
@@ -380,6 +385,7 @@ void gb_triangle(const GbVert *a, const GbVert *b, const GbVert *c) {
     const GbVert *v[3] = { a, b, c };
     pvr_vertex_t *pv;
     float zs = sState.decal ? 1.0005f : 1.0f;
+    int bg = sState.background;
     int i;
 
     if (sState.textured && sCurTex == NULL)
@@ -396,7 +402,7 @@ void gb_triangle(const GbVert *a, const GbVert *b, const GbVert *c) {
         pv->flags = (i == 2) ? PVR_CMD_VERTEX_EOL : PVR_CMD_VERTEX;
         pv->x = v[i]->x;
         pv->y = v[i]->y;
-        pv->z = v[i]->z * zs;
+        pv->z = bg ? BG_Z : v[i]->z * zs;
         pv->u = v[i]->u * sUScale;
         pv->v = v[i]->v * sVScale;
         pv->argb = v[i]->argb;
@@ -420,6 +426,7 @@ void gb_init(void) {
     int i;
 
     pvr_init(&params);
+    pvr_set_zclip(BG_PLANE_Z);   /* el plano de fondo de la PVR, más lejos que cualquier cosa del juego */
     pvr_set_bg_color(0.0f, 0.0f, 0.0f);
     for (i = 0; i < 2; i++) {
         sQ[i].u = memalign(32, QUEUE_UNITS * sizeof(Unit));

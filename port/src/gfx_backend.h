@@ -43,6 +43,9 @@ typedef struct {
     int use_offset;      /* usar oargb */
     int depth_test, depth_write;
     int decal;           /* G_ZS_PRIM / decal: un poco por delante */
+    int background;      /* fondo translúcido dibujado antes que lo 3D: al fondo del todo y tapado por lo opaco */
+    int overlay;         /* opaco sin profundidad dibujado después de lo 3D (HUD): a la lista translúcida, sin mezclar,
+                          * para que respete el orden con lo translúcido del HUD */
 } GbState;
 
 void gb_init(void);
