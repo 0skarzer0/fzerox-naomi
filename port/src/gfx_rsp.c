@@ -560,7 +560,13 @@ static const u8* tile_texture(GbTexture* tx, Tile* t) {
     tx->tlut = NULL;
     tx->tlut_ia = ((sOmH >> G_MDSFT_TEXTLUT) & 3) == 3;
     if (t->fmt == G_IM_FMT_CI) {
-        tx->tlut = sTlut[t->siz == G_IM_SIZ_4b ? (t->palette & 0xF) : 0];
+        if (((sOmH >> G_MDSFT_TEXTLUT) & 3) == 0) {
+            /* CI con la TLUT apagada: el RDP da el índice tal cual, como intensidad (los textos de los menús de
+             * carrera, CI8 teñidos con el color primario) */
+            tx->fmt = G_IM_FMT_I;
+        } else {
+            tx->tlut = sTlut[t->siz == G_IM_SIZ_4b ? (t->palette & 0xF) : 0];
+        }
     }
     bpp = (t->siz == G_IM_SIZ_32b) ? 4 : (t->siz == G_IM_SIZ_16b) ? 2 : 1;
     tx->be16 = (t->siz == G_IM_SIZ_16b || t->siz == G_IM_SIZ_32b) && fzx_is_mio0(tx->addr, bpp);
@@ -701,7 +707,10 @@ u32 gPortTris;
 
 /* ---- traza de un cuadro (para depurar): gPortTraceFrame = n.º de cuadro; se lee del volcado de RAM con
  * tools/live_ram.py --str gPortTrace ---- */
-u32 gPortTraceFrame = 0xFFFFFFFF; /* n.º de cuadro a trazar (se cambia para depurar) */
+#ifndef FZX_TRACE_FRAME
+#define FZX_TRACE_FRAME 0xFFFFFFFF
+#endif
+u32 gPortTraceFrame = FZX_TRACE_FRAME; /* n.º de cuadro a trazar (se cambia para depurar, o make PORT_EXTRA=-DFZX_TRACE_FRAME=n) */
 u32 gPortTraceMode = 0;        /* o: el cuadro 30 después de entrar en este gGameMode (0 = no) */
 static u32 sModeFrames;
 char gPortTrace[64 * 1024];

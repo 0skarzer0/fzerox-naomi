@@ -90,27 +90,13 @@ static uint32_t fnv32(uint32_t h, const uint8_t *p, int n) {
     return fnv(h, p, n);
 }
 
-/* una palabra de cada 8: basta para ver si el juego ha cambiado la imagen (se reescribe entera o a trozos
- * grandes), y cuesta 8 veces menos; las texturas pequeñas, enteras */
-static uint32_t fnv32_sparse(uint32_t h, const uint8_t *p, int n) {
-    const uint32_t *w = (const uint32_t *) p;
-    int i, words = n / 4;
-
-    for (i = 0; i < words; i += 8) {
-        h ^= w[i];
-        h *= 16777619u;
-    }
-    h ^= w[words - 1];   /* y la última */
-    return h * 16777619u;
-}
-
 static uint32_t tex_hash(const GbTexture *t) {
     uint32_t h = 2166136261u;
     int y, rb = row_bytes(t);
 
-    if (t->stride == rb && rb * t->height >= 512 && ((uintptr_t) t->addr & 3) == 0)
-        h = fnv32_sparse(h, t->addr, rb * t->height);
-    else if (t->stride == rb)
+    /* Entera: un muestreo (fnv32_sparse) confundía textos casi vacíos que ocupan la misma dirección de la arena
+     * uno detrás de otro ("Continue" salía con la imagen de otro texto en el menú de pausa) */
+    if (t->stride == rb)
         h = fnv32(h, t->addr, rb * t->height);   /* filas seguidas: de una vez */
     else
         for (y = 0; y < t->height; y++)

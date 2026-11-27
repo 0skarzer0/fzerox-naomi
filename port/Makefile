@@ -52,9 +52,14 @@ LDFLAGS   := $(filter-out -T%,$(KOS_LDFLAGS)) -Wl,-T,$(LD_SCRIPT) -Wl,--no-check
 
 all: $(BUILD)/1ST_READ.BIN $(BUILD)/ROM.BIN $(BUILD)/AUDIOTBL.BIN
 
+# Las cadenas del juego (cursores y símbolos japoneses de ancho completo) van en EUC-JP, como las compila la decomp
+# (su asm-processor convierte desde UTF-8); unos pocos ficheros, en Shift-JIS
+CHARSET := EUC-JP
+$(BUILD)/src/sys/rom/leo_fault.o: CHARSET := SHIFT-JIS
+
 $(BUILD)/%.o: $(DECOMP)/%.c
 	@mkdir -p $(dir $@)
-	@$(CC) $(GAME_CFLAGS) -I$(dir $<) -c $< -o $@ 2>> $(BUILD)/warnings.log || { echo "FALLA $<" | tee -a $(BUILD)/fallos.txt; $(CC) $(GAME_CFLAGS) -I$(dir $<) -c $< -o $@ 2>&1 | grep -m5 error; false; }
+	@$(CC) $(GAME_CFLAGS) -fexec-charset=$(CHARSET) -I$(dir $<) -c $< -o $@ 2>> $(BUILD)/warnings.log || { echo "FALLA $<" | tee -a $(BUILD)/fallos.txt; $(CC) $(GAME_CFLAGS) -fexec-charset=$(CHARSET) -I$(dir $<) -c $< -o $@ 2>&1 | grep -m5 error; false; }
 	@$(OBJCOPY) --prefix-alloc-sections=.fzxg $@
 
 $(addprefix $(BUILD)/port/,$(addsuffix .o,$(PORT_GAMEHDR))): $(BUILD)/port/%.o: $(HERE)src/%.c $(HERE)src/plat.h $(HERE)src/gfx_backend.h

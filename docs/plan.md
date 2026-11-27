@@ -110,6 +110,19 @@ los agrupa por función; vale igual con un volcado de la placa). Lo que costaba 
 Resultado en Flycast: título 16,5 -> 7 ms de lista (el cuadro lo marca el vblank); un menú pesado 33,8 -> 19,4 ms;
 la carrera con 60 % de tiempo libre. En placa la memoria pesa más que en Flycast (el hash, sobre todo), así que la
 mejora real hay que medirla allí.
+(Un muestreo del hash, 1 palabra de cada 8, se probó y se quitó: dos textos casi vacíos en la misma dirección de
+la arena daban el mismo hash.)
+
+Más arreglos de la misma noche:
+- **La demo del título** ya se ve entera (circuitos, 2 y 4 jugadores en pantalla partida): el circuito negro era la
+  física en NaN de `ROM_READ`.
+- **Cadenas en EUC-JP:** la decomp compila las cadenas del juego en EUC-JP (su asm-processor convierte desde
+  UTF-8) y el port las dejaba en UTF-8: el cursor "Ｍ" del menú de pausa salía como 7 glifos ("VVMMVVV" encima de
+  "Continue"). Ahora `-fexec-charset=EUC-JP` (Shift-JIS para `leo_fault.c`, como en la decomp).
+- CI con la TLUT apagada se lee como intensidad (como el RDP).
+
+Pendiente: en pausa la nave se ve celeste y medio transparente; niebla, tijera (`gDPSetScissor`: el menú de pausa
+la usa para su animación de apertura) y LOD sin hacer; medir en placa.
 
 ### Fase 2 (2026-11-27): hecha, en Flycast; la carrera ya se ve
 
