@@ -29,8 +29,8 @@ sirven de consulta: cómo resolvieron el little-endian, los datos de la ROM y el
 3. **Audio.** **Hecha** en Flycast (ver abajo).
 4. **Una carrera en Flycast** y medida en placa (`naomi_med`).
 5. **Rendimiento:** pista y naves por el camino nativo (como gdx-3ds y Diddy), hasta 60 fps o el plan B.
-6. **Mueble:** mandos (hecho el mapa `fzx`, ver la fase 3; falta probarlo), partidas en la VMU (el juego guarda en
-   SRAM), perfil de dc2naomi y prueba en placa.
+6. **Mueble:** mandos (hecho el mapa `fzx`, ver la fase 3; falta probarlo), partidas en la VMU (hecho, falta
+   probarlo), perfil de dc2naomi y prueba en placa.
 
 ## Estado
 
@@ -121,8 +121,12 @@ Más arreglos de la misma noche:
   "Continue"). Ahora `-fexec-charset=EUC-JP` (Shift-JIS para `leo_fault.c`, como en la decomp).
 - CI con la TLUT apagada se lee como intensidad (como el RDP).
 
-Pendiente: en pausa la nave se ve celeste y medio transparente; niebla, tijera (`gDPSetScissor`: el menú de pausa
-la usa para su animación de apertura) y LOD sin hacer; medir en placa.
+- **Partidas en la VMU:** la SRAM (récords, fantasmas, lo desbloqueado) se carga de `FZEROX.SRM` al arrancar y se
+  guarda 2 s después de la última escritura del juego (65 bloques). Guardar, visto en Flycast; cargar, sin probar.
+- `G_BRANCH_Z` hecho (Z de pantalla contra el umbral), aunque en las carreras vistas el juego no lo usa.
+
+Pendiente: en pausa la nave se ve celeste y medio transparente; niebla y tijera (`gDPSetScissor`: la animación del
+menú de pausa y la pantalla partida de VS) sin hacer; medir en placa y probar los mandos `fzx` y la VMU.
 
 ### Fase 2 (2026-11-27): hecha, en Flycast; la carrera ya se ve
 

@@ -6,9 +6,11 @@ No hay ningún port de F-Zero X a Dreamcast: la capa Dreamcast se hace aquí. El
 [dkr-naomi](https://github.com/0skarzer0/dkr-naomi): el juego se compila contra una KallistiOS parcheada para NAOMI
 (`NAOMI_HOST`) y dc2naomi lo empaqueta como imagen de NAOMI.
 
-**Estado: fase 3 hecha** (2026-11-27, ver [docs/plan.md](docs/plan.md)). En Flycast se ven el título, los menús, la
-selección de nave en 3D y **la carrera** (Mute City, con HUD y cuenta atrás), la nave responde al mando y **suenan
-la música y los efectos**. Mapa de mandos del mueble de Crazy Taxi hecho. Sin probar en placa.
+**Estado (2026-11-27):** en Flycast se juega: título, menús, naves en 3D, carreras a velocidad real (la física lee
+sus constantes del arranque del cartucho), la demo del título (también a 2 y 4 jugadores), música y efectos, menú
+de pausa y partidas guardadas en la VMU. Mapa de mandos del mueble de Crazy Taxi hecho. En placa: arranca y se
+juega (lento, sin sonido) con la imagen anterior a los arreglos de esa noche; la nueva, sin probar. Detalle en
+[docs/plan.md](docs/plan.md).
 
 ## Qué hace falta
 

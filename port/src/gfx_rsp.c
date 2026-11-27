@@ -62,7 +62,8 @@ static s32 sMvpDirty = 1;
 static u32 sGeom;
 static struct {
     float sx, sy, tx, ty;   /* en píxeles de N64 */
-} sVp = { 160, 120, 160, 120 };
+    float sz, tz;           /* Z de pantalla (0..G_MAXZ) */
+} sVp = { 160, 120, 160, 120, 511, 511 };
 
 static struct {
     u8 col[3];
@@ -704,6 +705,7 @@ static s32 clip_near(const RVtx* in, s32 n, RVtx* out) {
 }
 
 u32 gPortTris;
+u32 gPortBranchZ[2];   /* G_BRANCH_Z: [0] modelo lejano, [1] cercano */
 
 /* ---- traza de un cuadro (para depurar): gPortTraceFrame = n.º de cuadro; se lee del volcado de RAM con
  * tools/live_ram.py --str gPortTrace ---- */
@@ -1124,6 +1126,8 @@ static void run_dl(Gfx* dl) {
                     sVp.sy = vp->vscale[1] / 4.0f;
                     sVp.tx = vp->vtrans[0] / 4.0f;
                     sVp.ty = vp->vtrans[1] / 4.0f;
+                    sVp.sz = vp->vscale[2];
+                    sVp.tz = vp->vtrans[2];
                     sScrGen++;
                     trace(" VP %08x -> %p: %d %d %d / %d %d %d\n", (unsigned) w1, (void*) p, vp->vscale[0],
                           vp->vscale[1], vp->vscale[2], vp->vtrans[0], vp->vtrans[1], vp->vtrans[2]);
@@ -1155,9 +1159,24 @@ static void run_dl(Gfx* dl) {
             case G_ENDDL:
                 dl = sp > 0 ? stack[--sp] : NULL;
                 break;
-            case G_BRANCH_Z:
-                dl = resolve(sHalf1);   /* siempre el detalle más cercano */
+            case G_BRANCH_Z: {
+                /* nivel de detalle: saltar a la lista de RDPHALF_1 (el modelo cercano) si la Z de pantalla del
+                 * vértice (16.16, 0..G_MAXZ) es <= w1; también si está detrás o más allá del plano lejano (como
+                 * GLideN64). Las naves lejanas usan así sus modelos sencillos. */
+                s32 v = (w0 & 0xFFF) / 2;
+                s32 branch = 1;
+
+                if (v < MAX_VTX && sVtx[v].w > 0.0f) {
+                    float zs = sVtx[v].z / sVtx[v].w * sVp.sz + sVp.tz;
+
+                    branch = zs > 1023.0f || zs * 65536.0f <= (float) (s32) w1;
+                }
+                if (branch) {
+                    dl = resolve(sHalf1);
+                }
+                gPortBranchZ[branch]++;
                 break;
+            }
             case G_RDPHALF_1:
                 sHalf1 = w1;
                 break;
