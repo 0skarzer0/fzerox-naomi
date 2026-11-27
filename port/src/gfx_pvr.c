@@ -37,10 +37,33 @@ typedef struct {
     pvr_ptr_t vram;
     int pw, ph, pvrfmt;
     unsigned last;
+    int next;   /* siguiente de la misma cubeta, +1 (0 = fin) */
 } TexEntry;
 
 #define TEX_SLOTS 768
 static TexEntry sTex[TEX_SLOTS];
+/* Índice por cubetas (dirección ^ hash), con listas encadenadas: buscar mira solo las texturas de la cubeta. Antes se
+ * recorrían en sondeo lineal hasta las 768 entradas, saltando huecos, en cada búsqueda: en la pantalla de ajustes
+ * de la nave era la mitad del cuadro en la placa. */
+#define TEX_BUCKETS 1024
+static int sBucket[TEX_BUCKETS];   /* primera entrada + 1 (0 = vacía) */
+static int sFreeHint;
+
+static unsigned tex_bucket(const void *addr, uint32_t h) {
+    return ((uintptr_t) addr >> 3 ^ h) % TEX_BUCKETS;
+}
+
+static void tex_unlink(int i) {
+    int *pp = &sBucket[tex_bucket(sTex[i].addr, sTex[i].hash)];
+
+    while (*pp) {
+        if (*pp - 1 == i) {
+            *pp = sTex[i].next;
+            return;
+        }
+        pp = &sTex[*pp - 1].next;
+    }
+}
 static uint16_t sScratch[1024 * 1024 / 2];
 static unsigned sFrame;
 static GbStats sStats;
@@ -205,6 +228,7 @@ static void tex_evict_old(void) {
     }
     if (best >= 0) {
         pvr_mem_free(sTex[best].vram);
+        tex_unlink(best);
         sTex[best].used = 0;
         sStats.tex_evicted++;
     }
@@ -250,25 +274,29 @@ static TexEntry *tex_get_hashed(const GbTexture *t) {
     extern unsigned gPortStage;
     gPortStage = 30;
     uint32_t h = tex_hash(t);   /* (sin cronómetro: leer el temporizador cuesta tanto como un hash pequeño) */
-    unsigned slot = ((uintptr_t) t->addr >> 3 ^ h) % TEX_SLOTS;
+    unsigned b = tex_bucket(t->addr, h);
     int i, free_i = -1;
     TexEntry *e;
     size_t bytes;
     int tries;
 
-    for (i = 0; i < TEX_SLOTS; i++) {
-        e = &sTex[(slot + i) % TEX_SLOTS];
-        if (!e->used) {
-            if (free_i < 0)
-                free_i = (slot + i) % TEX_SLOTS;
-            continue;
-        }
+    for (i = sBucket[b]; i; i = e->next) {
+        e = &sTex[i - 1];
         if (e->addr == t->addr && e->hash == h && e->fmt == t->fmt && e->siz == t->siz && e->w == t->width &&
             e->h == t->height && e->stride == t->stride && e->tlut == t->tlut && e->tlut_ia == t->tlut_ia &&
             e->be16 == t->be16) {
             e->last = sFrame;
             sStats.textures_hit++;
             return e;
+        }
+    }
+    for (i = 0; i < TEX_SLOTS; i++) {
+        int k = (sFreeHint + i) % TEX_SLOTS;
+
+        if (!sTex[k].used) {
+            free_i = k;
+            sFreeHint = (k + 1) % TEX_SLOTS;
+            break;
         }
     }
     if (free_i < 0) {
@@ -300,6 +328,8 @@ static TexEntry *tex_get_hashed(const GbTexture *t) {
     e->tlut_be16 = t->tlut_be16;
     e->hash = h;
     e->last = sFrame;
+    e->next = sBucket[b];
+    sBucket[b] = free_i + 1;
     sStats.textures_made++;
     return e;
 }

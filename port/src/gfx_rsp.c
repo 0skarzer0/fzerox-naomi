@@ -56,11 +56,12 @@ static RVtx sVtx[MAX_VTX];
 static u32 sScrGen = 1;
 static u32 sVtxGen[MAX_VTX];      /* == sScrGen: posición de sScr[i] vale */
 static u32 sColGen[MAX_VTX];      /* == sScrGen: color de sScr[i] vale */
+static u8 sVtxOut[MAX_VTX];       /* vtx_outside de cada vértice cargado (se calcula una vez en do_vtx) */
 static GbVert sScr[MAX_VTX];
 static float sMv[MTX_STACK][4][4];
 static s32 sMvTop;
 static float sProj[4][4];
-static float sMvp[4][4];
+static float sMvp[4][4] __attribute__((aligned(8)));
 static s32 sMvpDirty = 1;
 static u32 sGeom;
 static struct {
@@ -210,6 +211,8 @@ static void lights_update(void) {
 
 /* ------------------------------------------------------------------ vértices */
 
+#define W_MIN 0.1f
+#define GUARD 3.0f
 static void do_vtx(u32 w0, u32 w1) {
     sCntVtx++;
     s32 n = (w0 >> 12) & 0xFF;
@@ -232,17 +235,44 @@ static void do_vtx(u32 w0, u32 w1) {
         lights_update();
     }
     m = sMvp;
+    (void) m;
+    /* la matriz en XMTRX (el banco de registros de la SH-4 para ftrv: 4x4 por vector en una instrucción); el
+     * cambio de contexto de KOS guarda los dos bancos */
+    {
+        const float* mp = &sMvp[0][0];
+
+        __asm__ volatile("frchg;"
+                         "fmov.s @%0+, fr0; fmov.s @%0+, fr1; fmov.s @%0+, fr2; fmov.s @%0+, fr3;"
+                         "fmov.s @%0+, fr4; fmov.s @%0+, fr5; fmov.s @%0+, fr6; fmov.s @%0+, fr7;"
+                         "fmov.s @%0+, fr8; fmov.s @%0+, fr9; fmov.s @%0+, fr10; fmov.s @%0+, fr11;"
+                         "fmov.s @%0+, fr12; fmov.s @%0+, fr13; fmov.s @%0+, fr14; fmov.s @%0+, fr15;"
+                         "frchg"
+                         : "+r"(mp)
+                         :
+                         : "memory");
+    }
     for (i = 0; i < n; i++) {
         Vtx_t* v = &src[i].v;
         RVtx* d = &sVtx[v0 + i];
         sVtxGen[v0 + i] = 0;
         sColGen[v0 + i] = 0;
-        float x = v->ob[0], y = v->ob[1], z = v->ob[2];
+        {
+            register float fx __asm__("fr4") = v->ob[0];
+            register float fy __asm__("fr5") = v->ob[1];
+            register float fz __asm__("fr6") = v->ob[2];
+            register float fw __asm__("fr7") = 1.0f;
 
-        d->x = x * m[0][0] + y * m[1][0] + z * m[2][0] + m[3][0];
-        d->y = x * m[0][1] + y * m[1][1] + z * m[2][1] + m[3][1];
-        d->z = x * m[0][2] + y * m[1][2] + z * m[2][2] + m[3][2];
-        d->w = x * m[0][3] + y * m[1][3] + z * m[2][3] + m[3][3];
+            __asm__("ftrv xmtrx, fv4" : "+f"(fx), "+f"(fy), "+f"(fz), "+f"(fw));
+            d->x = fx;
+            d->y = fy;
+            d->z = fz;
+            d->w = fw;
+        }
+        {
+            float g = GUARD * d->w;
+
+            sVtxOut[v0 + i] = d->z + d->w < 0.0f || d->w < W_MIN || d->x > g || d->x < -g || d->y > g || d->y < -g;
+        }
 
         if (sGeom & G_LIGHTING) {
             Vtx_tn* vn = &src[i].n;
@@ -894,10 +924,8 @@ static void to_screen(GbVert* o, const RVtx* v) {
 /* recorte contra un plano: el cercano (z = -w en el espacio de recorte de N64; plane 0) o w = W_MIN (plane 1): sin
  * este, lo que el juego dibuja sin recorte cercano y pasa casi por la cámara (w ~ 0, como un panel del cielo de Mute
  * City) se proyecta a millones de píxeles y la PVR lo pinta como una sábana blanca */
-#define W_MIN 0.1f
-/* banda de guarda: además, como el RSP, contra |x|, |y| <= GUARD * w (GUARD veces la pantalla): la PVR pinta mal los
+/* (W_MIN, más arriba) banda de guarda: además, como el RSP, contra |x|, |y| <= GUARD * w (GUARD veces la pantalla): la PVR pinta mal los
  * vértices a decenas de miles de píxeles (trozos de pista al lado de la cámara: sábanas blancas) */
-#define GUARD 3.0f
 static inline float clip_dist(const RVtx* v, s32 plane) {
     switch (plane) {
         case 0: return v->z + v->w;
@@ -1016,7 +1044,7 @@ static void draw_tri_(s32 i0, s32 i1, s32 i2) {
     if (i0 >= MAX_VTX || i1 >= MAX_VTX || i2 >= MAX_VTX) {
         return;
     }
-    if (vtx_outside(&sVtx[i0]) || vtx_outside(&sVtx[i1]) || vtx_outside(&sVtx[i2])) {
+    if (sVtxOut[i0] | sVtxOut[i1] | sVtxOut[i2]) {
         /* cruza el plano cercano, w = W_MIN o la banda de guarda: el único caso que copia vértices */
         RVtx in[3], poly[10];
 
@@ -1202,7 +1230,7 @@ static void do_fillrect(u32 w0, u32 w1) {
 
 /* ------------------------------------------------------------------ RDP: texturas */
 
-static void record_load(s32 tmem, const u8* addr, s32 stride, s32 words) {
+static s32 record_load(s32 tmem, const u8* addr, s32 stride, s32 words) {
     s32 i, slot = -1;
     u32 oldest = 0xFFFFFFFF;
 
@@ -1237,12 +1265,17 @@ static void record_load(s32 tmem, const u8* addr, s32 stride, s32 words) {
     if (slot < 0) {
         slot = 0;
     }
+    if (sLoads[slot].valid && sLoads[slot].tmem == tmem && sLoads[slot].addr == addr && sLoads[slot].stride == stride &&
+        sLoads[slot].words == words && sLoads[slot].seq == sLoadSeq) {
+        return 0;   /* la misma carga otra vez: nada cambia */
+    }
     sLoads[slot].valid = 1;
     sLoads[slot].tmem = tmem;
     sLoads[slot].addr = addr;
     sLoads[slot].stride = stride;
     sLoads[slot].words = words;
     sLoads[slot].seq = ++sLoadSeq;
+    return 1;
 }
 
 static s32 siz_bytes(s32 siz) {
@@ -1256,17 +1289,22 @@ static void do_loadtile(u32 w0, u32 w1) {
     s32 stride = sTimg.width * bpp;
     const u8* base = resolve(sTimg.addr);
 
+    s32 changed;
+
     if (sTimg.siz == G_IM_SIZ_4b) {
         stride = sTimg.width / 2;
-        record_load(t->tmem, base + (ult >> 2) * stride + (uls >> 2) / 2, stride, 0);
+        changed = record_load(t->tmem, base + (ult >> 2) * stride + (uls >> 2) / 2, stride, 0);
     } else {
-        record_load(t->tmem, base + (ult >> 2) * stride + (uls >> 2) * bpp, stride, 0);
+        changed = record_load(t->tmem, base + (ult >> 2) * stride + (uls >> 2) * bpp, stride, 0);
     }
+    changed |= t->uls != uls || t->ult != ult || t->lrs != (s32) ((w1 >> 12) & 0xFFF) || t->lrt != (s32) (w1 & 0xFFF);
     t->uls = uls;
     t->ult = ult;
     t->lrs = (w1 >> 12) & 0xFFF;
     t->lrt = w1 & 0xFFF;
-    sStateDirty = 1;
+    if (changed) {
+        sStateDirty = 1;
+    }
 }
 
 static void do_loadblock(u32 w0, u32 w1) {
@@ -1282,8 +1320,9 @@ static void do_loadblock(u32 w0, u32 w1) {
         off = (ult * sTimg.width + uls) / 2;
         bytes = texels / 2;
     }
-    record_load(t->tmem, base + off, 0, (bytes + 7) / 8);   /* filas de line * 8 bytes, como en la TMEM */
-    sStateDirty = 1;
+    if (record_load(t->tmem, base + off, 0, (bytes + 7) / 8)) {   /* filas de line * 8 bytes, como en la TMEM */
+        sStateDirty = 1;
+    }
 }
 
 static void do_loadtlut(u32 w0, u32 w1) {
@@ -1295,11 +1334,11 @@ static void do_loadtlut(u32 w0, u32 w1) {
 
     (void) w0;
     for (i = 0; i * 16 < count && slot + i < 16; i++) {
-        if (slot + i >= 0) {
+        if (slot + i >= 0 && sTlut[slot + i] != base + i * 32) {
             sTlut[slot + i] = base + i * 32;
+            sStateDirty = 1;
         }
     }
-    sStateDirty = 1;
 }
 
 /* ------------------------------------------------------------------ la lista */
@@ -1357,6 +1396,7 @@ static void run_dl(Gfx* dl) {
                         sVtx[v].b = ((w1 >> 8) & 0xFF) / 255.0f;
                         sVtx[v].a = (w1 & 0xFF) / 255.0f;
                     } else if (where == G_MWO_POINT_ST) {
+                        sVtxGen[v] = 0;   /* to_screen_pos guarda también u, v */
                         sVtx[v].u = (s16) (w1 >> 16) / 32.0f;
                         sVtx[v].v = (s16) (w1 & 0xFFFF) / 32.0f;
                     }
@@ -1366,9 +1406,11 @@ static void run_dl(Gfx* dl) {
             case G_TEXTURE:
                 sTexture.s = w1 >> 16;
                 sTexture.t = w1 & 0xFFFF;
-                sTexture.tile = (w0 >> 8) & 7;
-                sTexture.on = (w0 & 0xFF) != 0;
-                sStateDirty = 1;
+                if (sTexture.tile != ((w0 >> 8) & 7) || sTexture.on != ((w0 & 0xFF) != 0)) {
+                    sTexture.tile = (w0 >> 8) & 7;
+                    sTexture.on = (w0 & 0xFF) != 0;
+                    sStateDirty = 1;   /* (s y t solo escalan las coordenadas en do_vtx) */
+                }
                 break;
             case G_POPMTX: {
                 s32 n = w1 / 64;
@@ -1382,8 +1424,14 @@ static void run_dl(Gfx* dl) {
                 break;
             }
             case G_GEOMETRYMODE:
-                sGeom = (sGeom & (w0 | 0xFF000000)) | w1;
-                sStateDirty = 1;
+            {
+                u32 g = (sGeom & (w0 | 0xFF000000)) | w1;
+
+                if ((g ^ sGeom) & G_ZBUFFER) {
+                    sStateDirty = 1;   /* del modo de geometría, el estado solo usa G_ZBUFFER (el descarte va aparte) */
+                }
+                sGeom = g;
+            }
                 break;
             case G_MTX:
                 do_mtx(w0, w1);
@@ -1475,18 +1523,25 @@ static void run_dl(Gfx* dl) {
                 s32 sft = 32 - ((w0 >> 8) & 0xFF) - len;
                 u32 mask = ((len >= 32) ? 0xFFFFFFFF : ((1u << len) - 1)) << sft;
 
-                if (op == G_SETOTHERMODE_L) {
-                    sOmL = (sOmL & ~mask) | (w1 & mask);
-                } else {
-                    sOmH = (sOmH & ~mask) | (w1 & mask);
+                u32 old = op == G_SETOTHERMODE_L ? sOmL : sOmH;
+                u32 nv = (old & ~mask) | (w1 & mask);
+
+                if (nv != old) {
+                    if (op == G_SETOTHERMODE_L) {
+                        sOmL = nv;
+                    } else {
+                        sOmH = nv;
+                    }
+                    sStateDirty = 1;
                 }
-                sStateDirty = 1;
                 break;
             }
             case G_RDPSETOTHERMODE:
-                sOmH = w0 & 0xFFFFFF;
-                sOmL = w1;
-                sStateDirty = 1;
+                if (sOmH != (w0 & 0xFFFFFF) || sOmL != w1) {
+                    sOmH = w0 & 0xFFFFFF;
+                    sOmL = w1;
+                    sStateDirty = 1;
+                }
                 break;
             case G_TEXRECT: case G_TEXRECTFLIP: {
                 u32 h1 = dl[0].words.w1, h2 = dl[1].words.w1;
@@ -1503,12 +1558,15 @@ static void run_dl(Gfx* dl) {
             case G_SETTILESIZE: {
                 trace(" TS %08x %08x\n", (unsigned) w0, (unsigned) w1);
                 Tile* t = &sTiles[(w1 >> 24) & 7];
+                Tile o = *t;
 
                 t->uls = (w0 >> 12) & 0xFFF;
                 t->ult = w0 & 0xFFF;
                 t->lrs = (w1 >> 12) & 0xFFF;
                 t->lrt = w1 & 0xFFF;
-                sStateDirty = 1;
+                if (o.uls != t->uls || o.ult != t->ult || o.lrs != t->lrs || o.lrt != t->lrt) {
+                    sStateDirty = 1;
+                }
                 break;
             }
             case G_LOADBLOCK:
@@ -1521,6 +1579,7 @@ static void run_dl(Gfx* dl) {
                 break;
             case G_SETTILE: {
                 Tile* t = &sTiles[(w1 >> 24) & 7];
+                Tile o = *t;
 
                 t->fmt = (w0 >> 21) & 7;
                 t->siz = (w0 >> 19) & 3;
@@ -1533,7 +1592,11 @@ static void run_dl(Gfx* dl) {
                 t->cms = (w1 >> 8) & 3;
                 t->masks = (w1 >> 4) & 0xF;
                 t->shifts = w1 & 0xF;
-                sStateDirty = 1;
+                if (o.fmt != t->fmt || o.siz != t->siz || o.line != t->line || o.tmem != t->tmem ||
+                    o.palette != t->palette || o.cmt != t->cmt || o.maskt != t->maskt || o.shiftt != t->shiftt ||
+                    o.cms != t->cms || o.masks != t->masks || o.shifts != t->shifts) {
+                    sStateDirty = 1;
+                }
                 break;
             }
             case G_FILLRECT:
@@ -1549,18 +1612,24 @@ static void run_dl(Gfx* dl) {
                 sBlendColor = w1;
                 break;
             case G_SETPRIMCOLOR:
-                sPrim = w1;
-                sPrimLod = w0 & 0xFF;
-                sStateDirty = 1;
+                if (sPrim != w1 || sPrimLod != (w0 & 0xFF)) {
+                    sPrim = w1;
+                    sPrimLod = w0 & 0xFF;
+                    sStateDirty = 1;
+                }
                 break;
             case G_SETENVCOLOR:
-                sEnv = w1;
-                sStateDirty = 1;
+                if (sEnv != w1) {
+                    sEnv = w1;
+                    sStateDirty = 1;
+                }
                 break;
             case G_SETCOMBINE:
-                sCombine0 = w0 & 0xFFFFFF;
-                sCombine1 = w1;
-                sStateDirty = 1;
+                if (sCombine0 != (w0 & 0xFFFFFF) || sCombine1 != w1) {
+                    sCombine0 = w0 & 0xFFFFFF;
+                    sCombine1 = w1;
+                    sStateDirty = 1;
+                }
                 break;
             case G_SETTIMG:
                 sTimg.fmt = (w0 >> 21) & 7;
