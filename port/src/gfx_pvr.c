@@ -447,9 +447,74 @@ void gb_frame_begin(unsigned clear_argb) {
 
 unsigned gPortStage;
 
+#ifdef FZX_FPS
+/* Contador de cuadros por segundo arriba a la derecha (make PORT_EXTRA=-DFZX_FPS): cuántas imágenes manda el juego
+ * por segundo, medido cada medio segundo. Verde a 59 o más, amarillo de 30 a 58, rojo por debajo. */
+static void fps_rect(float x0, float y0, float x1, float y1, unsigned argb) {
+    GbVert v[4];
+    int i;
+
+    for (i = 0; i < 4; i++) {
+        v[i].x = (i & 1) ? x1 : x0;
+        v[i].y = (i & 2) ? y1 : y0;
+        v[i].z = 1.0f;
+        v[i].u = v[i].v = 0.0f;
+        v[i].argb = argb;
+        v[i].oargb = 0;
+    }
+    gb_triangle(&v[0], &v[1], &v[2]);
+    gb_triangle(&v[1], &v[3], &v[2]);
+}
+
+static void fps_draw(void) {
+    /* segmentos a b c d e f g (bit 0 = a) */
+    static const unsigned char seg[10] = { 0x3F, 0x06, 0x5B, 0x4F, 0x66, 0x6D, 0x7D, 0x07, 0x7F, 0x6F };
+    static unsigned last, frames, shown = 60;
+    GbState st;
+    unsigned now = NOW_US(), col;
+    int d, n, digits[3], nd = 0;
+    const float W = 12, H = 22, T = 3, GAP = 5;
+    float x, y = 12;
+
+    frames++;
+    if (last == 0) {
+        last = now;
+    } else if (now - last >= 500000) {
+        shown = (unsigned) ((frames * 1000000ULL + (now - last) / 2) / (now - last));
+        frames = 0;
+        last = now;
+    }
+    memset(&st, 0, sizeof(st));
+    st.overlay = 1;
+    gb_set_state(&st);
+    n = shown > 999 ? 999 : (int) shown;
+    do {
+        digits[nd++] = n % 10;
+        n /= 10;
+    } while (n > 0);
+    col = shown >= 59 ? 0xFF40FF40 : (shown >= 30 ? 0xFFFFE040 : 0xFFFF4040);
+    x = 640 - 12 - nd * (W + GAP) + GAP;
+    fps_rect(x - 4, y - 4, 640 - 8, y + H + 4, 0xFF000000);
+    for (d = nd - 1; d >= 0; d--, x += W + GAP) {
+        unsigned m = seg[digits[d]];
+
+        if (m & 0x01) fps_rect(x, y, x + W, y + T, col);
+        if (m & 0x02) fps_rect(x + W - T, y, x + W, y + H / 2, col);
+        if (m & 0x04) fps_rect(x + W - T, y + H / 2, x + W, y + H, col);
+        if (m & 0x08) fps_rect(x, y + H - T, x + W, y + H, col);
+        if (m & 0x10) fps_rect(x, y + H / 2, x + T, y + H, col);
+        if (m & 0x20) fps_rect(x, y, x + T, y + H / 2, col);
+        if (m & 0x40) fps_rect(x, y + (H - T) / 2, x + W, y + (H + T) / 2, col);
+    }
+}
+#endif
+
 void gb_frame_end(void) {
     int l, i;
 
+#ifdef FZX_FPS
+    fps_draw();
+#endif
     unsigned t0 = NOW_US(), t1;
 
     gPortStage = 20;
