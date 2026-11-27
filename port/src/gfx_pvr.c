@@ -249,9 +249,7 @@ static TexEntry *tex_get(const GbTexture *t) {
 static TexEntry *tex_get_hashed(const GbTexture *t) {
     extern unsigned gPortStage;
     gPortStage = 30;
-    unsigned t0 = NOW_US();
-    uint32_t h = tex_hash(t);
-    gPortProfHash += NOW_US() - t0;
+    uint32_t h = tex_hash(t);   /* (sin cronómetro: leer el temporizador cuesta tanto como un hash pequeño) */
     unsigned slot = ((uintptr_t) t->addr >> 3 ^ h) % TEX_SLOTS;
     int i, free_i = -1;
     TexEntry *e;
@@ -335,11 +333,9 @@ static int same_state(const GbState *a, const GbState *b) {
 void gb_set_state(const GbState *st) {
     pvr_poly_cxt_t cxt;
     int list;
-    unsigned t0;
 
     if (sStateValid && same_state(st, &sState) && (!st->textured || sCurTex != NULL))
         return;   /* la misma cabecera: las colas siguen valiendo con la última que se puso */
-    t0 = NOW_US();
     sStateValid = 1;
     sState = *st;
     sCurTex = st->textured ? tex_get(&st->tex) : NULL;
@@ -370,14 +366,22 @@ void gb_set_state(const GbState *st) {
     }
     pvr_poly_compile(&sHdr, &cxt);
     sQ[0].hdr_valid = sQ[1].hdr_valid = 0;
-    gPortProfState += NOW_US() - t0;
 }
 
 /* ------------------------------------------------------------------ triángulos */
 
+/* Reserva la línea de caché de una unidad de la cola sin leerla de memoria (movca.l): se va a escribir entera. Sin
+ * esto, cada escritura en la cola (1,5 MB que se recorren en cada cuadro, nunca en caché) lee antes la línea de la
+ * RAM: en la placa, unos 200 ciclos por vértice. */
+static inline void unit_alloc(Unit *u) {
+    __asm__ volatile("movca.l r0, @%0" : : "r"(u) : "r0", "memory");
+}
+
 static void push(Queue *q, const void *data) {
-    if (q->n < QUEUE_UNITS)
+    if (q->n < QUEUE_UNITS) {
+        unit_alloc(&q->u[q->n]);
         memcpy(&q->u[q->n++], data, 32);
+    }
 }
 
 void gb_triangle(const GbVert *a, const GbVert *b, const GbVert *c) {
@@ -393,12 +397,14 @@ void gb_triangle(const GbVert *a, const GbVert *b, const GbVert *c) {
     if (q->n + 4 > QUEUE_UNITS)
         return;
     if (!q->hdr_valid) {
+        unit_alloc(&q->u[q->n]);
         memcpy(&q->u[q->n++], &sHdr, sizeof(Unit));
         q->hdr_valid = 1;
     }
     /* los vértices se escriben directamente en la cola (sin uno local y memcpy) */
     pv = (pvr_vertex_t *) &q->u[q->n];
     for (i = 0; i < 3; i++, pv++) {
+        unit_alloc((Unit *) pv);
         pv->flags = (i == 2) ? PVR_CMD_VERTEX_EOL : PVR_CMD_VERTEX;
         pv->x = v[i]->x;
         pv->y = v[i]->y;
