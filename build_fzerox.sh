@@ -143,6 +143,9 @@ rm -rf "$DISC"; mkdir -p "$DISC"
 [ -x "$KOS/utils/makeip/makeip" ] || make -C "$KOS/utils/makeip"
 "$KOS/utils/makeip/makeip" "$HERE/ip.txt" "$DISC/IP.BIN" >/dev/null
 cp "$B/1ST_READ.BIN" "$B/ROM.BIN" "$B/AUDIOTBL.BIN" "$DISC/"
+# los primeros 4 KB del cartucho (cabecera + arranque): el juego lee de ahí las constantes de física de las naves
+# (ROM_READ en racer.c); no se compilan, se copian tal cual de la ROM del usuario
+dd if="$ROM" of="$DISC/BOOT.BIN" bs=4096 count=1 status=none
 ls -la "$DISC"
 
 # 6. la imagen de NAOMI (el loader de dc2naomi se compila con el árbol KOS_SUBARCH=naomi)

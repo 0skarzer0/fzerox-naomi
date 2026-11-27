@@ -362,6 +362,19 @@ int main(int argc, char **argv) {
     memset(__fzx_n64, 0, __fzx_n64_end - __fzx_n64);   /* la RDRAM empieza a cero (BSS de todos los segmentos) */
     load_file("/cd/ROM.BIN", __fzx_rom_start, __fzx_rom_end);
     load_file("/cd/AUDIOTBL.BIN", audio_table_ROM_START, audio_table_ROM_END);
+    {
+        /* cabecera + arranque del cartucho (stubs.c, fzx_cart_read): las constantes de física de las naves */
+        extern unsigned char fzx_cart_boot[0x1000];
+        extern int fzx_cart_boot_ok;
+        file_t f = fs_open("/cd/BOOT.BIN", O_RDONLY);
+
+        if (f >= 0) {
+            fzx_cart_boot_ok = fs_read(f, fzx_cart_boot, sizeof(fzx_cart_boot)) == (ssize_t) sizeof(fzx_cart_boot);
+            fs_close(f);
+        }
+        if (!fzx_cart_boot_ok)
+            plat_log("fzx: falta /cd/BOOT.BIN: las naves no correrán (física a cero)\n");
+    }
     load_segment("entry", entry_ROM_START, entry_ROM_END, entry_VRAM);
     load_segment("main", main_ROM_START, main_ROM_END, main_VRAM);
     thd_create(true, watchdog, NULL);

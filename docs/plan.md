@@ -85,6 +85,16 @@ audio se bloquea en sus DMA) y en la placa las órdenes se perdían; en Flycast 
 del juego espera a `gAudioContextInitialized` (`sys_gfx.c`), y `osStartThread` cede el turno a un hilo nuevo con más
 prioridad que el que lo arranca hasta que se bloquea, como en N64. Imagen nueva subida, **sin reprobar**.
 
+**La nave no corría** (en placa "va lento" y, con un turbo o una placa de aceleración, desaparecían nave y pista):
+el juego lee constantes de física de cada nave **de la cabecera y el arranque del cartucho** (`ROM_READ(0x0A0)`...
+en `racer.c`, y en dos overlays), un truco contra copias. En el SH-4 esa dirección daba 0: `unk_1BC = 0` y
+`unk_324 = 1/0 = inf`, velocidad máxima de unos 17 km/h, y con un turbo la física pasaba a NaN (todo fuera de la
+imagen). Ahora `ROM_READ` llama a `fzx_cart_read` (los 4 KB de `BOOT.BIN`, que `build_fzerox.sh` saca de la ROM del
+usuario) e `IO_READ` (el juego solo mira `PI_STATUS` antes) devuelve 0: antes leía la memoria de vídeo de la NAOMI,
+con riesgo de quedarse esperando. En Flycast la nave pasa de 700 km/h por las placas y el cartel de la carrera dice
+"GP RACE / NOVICE" (el "BAC9D" también salía de ahí). Prueba sin mandos: `make PORT_EXTRA=-DFZX_AUTOPAD` (en carrera,
+A siempre y B cada 2 s).
+
 ### Fase 2 (2026-11-27): hecha, en Flycast; la carrera ya se ve
 
 En Flycast se ve todo lo que se ha probado: título (logotipo sobre el cómic, "PUSH START"), menú principal,
@@ -125,7 +135,7 @@ Trampas de la fase (todas resueltas; las del juego, en `decomp/fzerox-naomi.patc
 - `LOADBLOCK`: `uls`/`ult` son el texel de inicio en la imagen (las tiras de los fondos los usan).
 - Conversión de la matriz: `(s16 << 16) | u16` es `u32` en C; sin `(s32)`, los negativos salían como 65535,x.
 
-Pendiente visto en esta fase: el cartel "GP RACE / RACE n" sale "BAC9D", recuadros magenta en el menú de pausa,
+Pendiente visto en esta fase: el cartel "GP RACE / RACE n" sale "BAC9D" (arreglado en la fase 3: `ROM_READ`), recuadros magenta en el menú de pausa,
 LOD (`G_BRANCH_Z` siempre al detalle cercano), niebla (sin hacer), tijera (sin hacer). El rendimiento real se mide
 en placa (fases 4 y 5).
 

@@ -519,6 +519,26 @@ void osContGetReadData(OSContPad* pads) {
         pads[i].errno = CONT_NO_RESPONSE_ERROR;
     }
     if (plat_pad_read(&buttons, &x, &y)) {
+#ifdef FZX_AUTOPAD
+        /* Solo para pruebas en Flycast (make PORT_EXTRA=-DFZX_AUTOPAD): tras 10 pulsaciones de START (las de la
+         * secuencia que llega a la carrera), en carrera mantiene A y pulsa B (turbo) 5 cuadros cada 2 s. */
+        {
+            extern s32 gGameMode;
+            static unsigned starts, prev, n;
+
+            if ((buttons & START_BUTTON) && !(prev & START_BUTTON)) {
+                starts++;
+            }
+            prev = buttons;
+            if (starts >= 10 && (gGameMode & 0xFF) == 1) {
+                n++;
+                buttons |= A_BUTTON;
+                if (n % 120 < 5) {
+                    buttons |= B_BUTTON;
+                }
+            }
+        }
+#endif
         pads[0].button = buttons;
         pads[0].stick_x = x;
         pads[0].stick_y = y;

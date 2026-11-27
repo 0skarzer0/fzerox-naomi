@@ -28,7 +28,7 @@ INC  := -I$(DECOMP)/include -I$(DECOMP)/bin/us/rev0 -I$(DECOMP) -I$(DECOMP)/incl
 # Los avisos del código de la decomp no se miran (-w).
 GAME_CFLAGS := $(KOS_CFLAGS) -fno-data-sections -fno-toplevel-reorder -fno-zero-initialized-in-bss -fno-strict-aliasing -funsigned-char \
                -fno-common -std=gnu89 -w $(DEFS) $(INC)
-PORT_CFLAGS := $(KOS_CFLAGS) -Wall -Wno-unused -I$(HERE)src
+PORT_CFLAGS := $(KOS_CFLAGS) -Wall -Wno-unused -I$(HERE)src $(PORT_EXTRA)
 
 # Lista de ficheros como la decomp (EXPANSION_KIT=0): fuera el 64DD, sus overlays y libultra (la da port/src/ultra.c;
 # se queda gu/, las matemáticas de matrices, que es C puro).
@@ -59,7 +59,7 @@ $(BUILD)/%.o: $(DECOMP)/%.c
 
 $(addprefix $(BUILD)/port/,$(addsuffix .o,$(PORT_GAMEHDR))): $(BUILD)/port/%.o: $(HERE)src/%.c $(HERE)src/plat.h $(HERE)src/gfx_backend.h
 	@mkdir -p $(dir $@)
-	$(CC) $(GAME_CFLAGS) -I$(HERE)src -c $< -o $@
+	$(CC) $(GAME_CFLAGS) $(PORT_EXTRA) -I$(HERE)src -c $< -o $@
 
 $(addprefix $(BUILD)/port/,$(addsuffix .o,$(PORT_KOSHDR))): $(BUILD)/port/%.o: $(HERE)src/%.c $(HERE)src/plat.h $(HERE)src/gfx_backend.h
 	@mkdir -p $(dir $@)

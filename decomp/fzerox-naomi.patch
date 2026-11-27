@@ -18,11 +18,45 @@ index 6ed5519..e1d108d 100644
  typedef union {
      Mtx_t		m;
  	Mtx_u		u;
+diff --git a/include/PR/rcp.h b/include/PR/rcp.h
+index 47c4b34..4e1f5b6 100644
+--- a/include/PR/rcp.h
++++ b/include/PR/rcp.h
+@@ -833,7 +833,14 @@
+  * Common macros
+  */
+ #if defined(_LANGUAGE_C) || defined(_LANGUAGE_C_PLUS_PLUS)
++#ifdef NAOMI_HOST
++// fzerox-naomi: no hay registros del RCP; el juego solo lee PI_STATUS (esperar a que el PI esté libre: siempre lo
++// está). Leer 0xA4600010 en el SH-4 sería la memoria de vídeo.
++unsigned int fzx_io_read(unsigned int addr);
++#define	IO_READ(addr)       fzx_io_read(addr)
++#else
+ #define	IO_READ(addr)       (*(vu32*)PHYS_TO_K1(addr))
++#endif
+ #define	IO_WRITE(addr,data) (*(vu32*)PHYS_TO_K1(addr)=(u32)(data))
+ #define RCP_STAT_PRINT                                              \
+     rmonPrintf("current=%x start=%x end=%x dpstat=%x spstat=%x\n",	\
 diff --git a/include/macros.h b/include/macros.h
-index 429a175..d69a7cc 100644
+index 429a175..6e48dff 100644
 --- a/include/macros.h
 +++ b/include/macros.h
-@@ -87,4 +87,11 @@
+@@ -38,7 +38,14 @@
+ #define TEX_SIZE_4B(tex) (TEX_WIDTH(tex) * TEX_HEIGHT(tex) / 2)
+ 
+ #define PHYS_TO_K1ROM(x) (((u32) (x) | 0xB0000000))
++#ifdef NAOMI_HOST
++// fzerox-naomi: el juego lee constantes de las naves de la cabecera y el arranque del cartucho (< 0x1000); el port
++// los carga de BOOT.BIN (port/src/stubs.c)
++unsigned int fzx_cart_read(unsigned int addr);
++#define ROM_READ(addr) fzx_cart_read(addr)
++#else
+ #define ROM_READ(addr) (*(vu32*) PHYS_TO_K1ROM(addr))
++#endif
+ 
+ #if OS_TV_TYPE == OS_TV_TYPE_NTSC
+ #define TIME_CONVERT(x) (x)
+@@ -87,4 +94,11 @@
  #define OS_MSEC_TO_CYCLES(n)    OS_USEC_TO_CYCLES((n) * 1000LL)
  #define OS_SEC_TO_CYCLES(n)     OS_MSEC_TO_CYCLES((n) * 1000LL)
  

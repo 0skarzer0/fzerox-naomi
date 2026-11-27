@@ -114,6 +114,30 @@ int func_800AA6BC(u8 *src) {
     return (int) be32(src + 4);
 }
 
+/* ---- los primeros 4 KB del cartucho (cabecera + IPL3) ----
+ * El juego lee de ahí, con lecturas directas a la ROM (ROM_READ en racer.c y dos overlays), las constantes de física
+ * de las naves: un truco contra copias. plat_kos.c los carga de BOOT.BIN (lo saca build_fzerox.sh de la ROM del
+ * usuario). Son bytes de la ROM: big-endian. */
+u8 fzx_cart_boot[0x1000];
+int fzx_cart_boot_ok;
+unsigned gPortCartReads;
+
+unsigned int fzx_cart_read(unsigned int addr) {
+    addr &= 0x0FFFFFFC;
+    gPortCartReads++;
+    if (addr + 4 > sizeof(fzx_cart_boot)) {
+        plat_log("fzx: ROM_READ fuera de los 4 KB del arranque: %08x\n", addr);
+        return 0;
+    }
+    return be32(fzx_cart_boot + addr);
+}
+
+/* IO_READ: el juego solo mira PI_STATUS (esperar al PI); aquí nunca está ocupado */
+unsigned int fzx_io_read(unsigned int addr) {
+    (void) addr;
+    return 0;
+}
+
 /* ---- libultra/libm sueltas ---- */
 void guNormalize(float *x, float *y, float *z) {
     float m = sqrtf(*x * *x + *y * *y + *z * *z);
