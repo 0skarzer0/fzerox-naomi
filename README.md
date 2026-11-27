@@ -46,6 +46,7 @@ Hace falta un clon de dc2naomi con los perfiles `fzerox`/`fzerox_dbg` (`tools/ga
 - `port/src/audio_hle.c`: el microcódigo de audio en la CPU; la salida al AICA, en `plat_kos.c`.
 - `tools/live_ram.py`: lee de un volcado de RAM de Flycast el log de KallistiOS y variables del juego.
 - `tools/audio_wav.py`: saca a un WAV los últimos 4 s de sonido de un volcado de RAM.
+- `tools/pcprof.py`: perfil por muestreo (PC en cada vblank) de un volcado de RAM, por funciones.
 
 ## Agradecimientos
 

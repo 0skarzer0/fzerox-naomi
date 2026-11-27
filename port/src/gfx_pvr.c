@@ -44,6 +44,9 @@ static TexEntry sTex[TEX_SLOTS];
 static uint16_t sScratch[1024 * 1024 / 2];
 static unsigned sFrame;
 static GbStats sStats;
+/* perfil (microsegundos acumulados; gfx_rsp.c los saca al log cada 300 cuadros) */
+unsigned gPortProfHash, gPortProfState, gPortProfWait, gPortProfSubmit;
+#define NOW_US() ((unsigned) timer_us_gettime64())
 
 static int next_pot(int v) {
     int p = 8;
@@ -73,14 +76,47 @@ static int row_bytes(const GbTexture *t) {
     }
 }
 
+/* por palabras de 32 bits (4 veces menos vueltas que byte a byte); filas desalineadas, byte a byte */
+static uint32_t fnv32(uint32_t h, const uint8_t *p, int n) {
+    if (((uintptr_t) p & 3) == 0) {
+        const uint32_t *w = (const uint32_t *) p;
+
+        for (; n >= 4; n -= 4) {
+            h ^= *w++;
+            h *= 16777619u;
+        }
+        p = (const uint8_t *) w;
+    }
+    return fnv(h, p, n);
+}
+
+/* una palabra de cada 8: basta para ver si el juego ha cambiado la imagen (se reescribe entera o a trozos
+ * grandes), y cuesta 8 veces menos; las texturas pequeñas, enteras */
+static uint32_t fnv32_sparse(uint32_t h, const uint8_t *p, int n) {
+    const uint32_t *w = (const uint32_t *) p;
+    int i, words = n / 4;
+
+    for (i = 0; i < words; i += 8) {
+        h ^= w[i];
+        h *= 16777619u;
+    }
+    h ^= w[words - 1];   /* y la última */
+    return h * 16777619u;
+}
+
 static uint32_t tex_hash(const GbTexture *t) {
     uint32_t h = 2166136261u;
     int y, rb = row_bytes(t);
 
-    for (y = 0; y < t->height; y++)
-        h = fnv(h, t->addr + y * t->stride, rb);
+    if (t->stride == rb && rb * t->height >= 512 && ((uintptr_t) t->addr & 3) == 0)
+        h = fnv32_sparse(h, t->addr, rb * t->height);
+    else if (t->stride == rb)
+        h = fnv32(h, t->addr, rb * t->height);   /* filas seguidas: de una vez */
+    else
+        for (y = 0; y < t->height; y++)
+            h = fnv32(h, t->addr + y * t->stride, rb);
     if (t->tlut)
-        h = fnv(h, t->tlut, t->siz == GB_SIZ_4b ? 32 : 512);
+        h = fnv32(h, t->tlut, t->siz == GB_SIZ_4b ? 32 : 512);
     return h;
 }
 
@@ -188,10 +224,48 @@ static void tex_evict_old(void) {
     }
 }
 
+/* Memo por dirección: si esta textura (mismos parámetros) ya se comprobó en este cuadro, no se vuelve a calcular su
+ * hash (un cuadro usa la misma muchas veces). Un cambio de su contenido dentro del mismo cuadro no se vería hasta el
+ * siguiente. */
+#define MEMO_SLOTS 1024
+static struct {
+    GbTexture key;
+    unsigned frame;
+    TexEntry *e;
+} sMemo[MEMO_SLOTS];
+
+static int same_tex(const GbTexture *a, const GbTexture *b) {
+    return a->addr == b->addr && a->fmt == b->fmt && a->siz == b->siz && a->width == b->width &&
+           a->height == b->height && a->stride == b->stride && a->tlut == b->tlut && a->tlut_ia == b->tlut_ia &&
+           a->be16 == b->be16 && a->tlut_be16 == b->tlut_be16;
+}
+
+static TexEntry *tex_get_hashed(const GbTexture *t);
+
 static TexEntry *tex_get(const GbTexture *t) {
+    unsigned m = ((uintptr_t) t->addr >> 3 ^ (uintptr_t) t->tlut >> 5 ^ (unsigned) t->width * 31) % MEMO_SLOTS;
+    TexEntry *e;
+
+    if (sMemo[m].frame == sFrame && sMemo[m].e != NULL && sMemo[m].e->used && same_tex(&sMemo[m].key, t)) {
+        sMemo[m].e->last = sFrame;
+        sStats.textures_hit++;
+        return sMemo[m].e;
+    }
+    e = tex_get_hashed(t);
+    if (e != NULL) {
+        sMemo[m].key = *t;
+        sMemo[m].frame = sFrame;
+        sMemo[m].e = e;
+    }
+    return e;
+}
+
+static TexEntry *tex_get_hashed(const GbTexture *t) {
     extern unsigned gPortStage;
     gPortStage = 30;
+    unsigned t0 = NOW_US();
     uint32_t h = tex_hash(t);
+    gPortProfHash += NOW_US() - t0;
     unsigned slot = ((uintptr_t) t->addr >> 3 ^ h) % TEX_SLOTS;
     int i, free_i = -1;
     TexEntry *e;
@@ -254,10 +328,28 @@ static int sCurList;
 static float sUScale = 1.0f, sVScale = 1.0f;
 static pvr_poly_hdr_t sHdr;
 
+static int sStateValid;   /* sState/sHdr valen para este cuadro */
+
+/* GbState es todo palabras de 32 bits (enteros y punteros): comparar por palabras */
+static int same_state(const GbState *a, const GbState *b) {
+    const uint32_t *x = (const uint32_t *) a, *y = (const uint32_t *) b;
+    unsigned i;
+
+    for (i = 0; i < sizeof(GbState) / 4; i++)
+        if (x[i] != y[i])
+            return 0;
+    return 1;
+}
+
 void gb_set_state(const GbState *st) {
     pvr_poly_cxt_t cxt;
     int list;
+    unsigned t0;
 
+    if (sStateValid && same_state(st, &sState) && (!st->textured || sCurTex != NULL))
+        return;   /* la misma cabecera: las colas siguen valiendo con la última que se puso */
+    t0 = NOW_US();
+    sStateValid = 1;
     sState = *st;
     sCurTex = st->textured ? tex_get(&st->tex) : NULL;
     list = st->blend ? 1 : 0;
@@ -287,6 +379,7 @@ void gb_set_state(const GbState *st) {
     }
     pvr_poly_compile(&sHdr, &cxt);
     sQ[0].hdr_valid = sQ[1].hdr_valid = 0;
+    gPortProfState += NOW_US() - t0;
 }
 
 /* ------------------------------------------------------------------ triángulos */
@@ -299,7 +392,8 @@ static void push(Queue *q, const void *data) {
 void gb_triangle(const GbVert *a, const GbVert *b, const GbVert *c) {
     Queue *q = &sQ[sCurList];
     const GbVert *v[3] = { a, b, c };
-    pvr_vertex_t pv;
+    pvr_vertex_t *pv;
+    float zs = sState.decal ? 1.0005f : 1.0f;
     int i;
 
     if (sState.textured && sCurTex == NULL)
@@ -307,20 +401,22 @@ void gb_triangle(const GbVert *a, const GbVert *b, const GbVert *c) {
     if (q->n + 4 > QUEUE_UNITS)
         return;
     if (!q->hdr_valid) {
-        push(q, &sHdr);
+        q->u[q->n++] = *(const Unit *) &sHdr;
         q->hdr_valid = 1;
     }
-    for (i = 0; i < 3; i++) {
-        pv.flags = (i == 2) ? PVR_CMD_VERTEX_EOL : PVR_CMD_VERTEX;
-        pv.x = v[i]->x;
-        pv.y = v[i]->y;
-        pv.z = sState.decal ? v[i]->z * 1.0005f : v[i]->z;
-        pv.u = v[i]->u * sUScale;
-        pv.v = v[i]->v * sVScale;
-        pv.argb = v[i]->argb;
-        pv.oargb = v[i]->oargb;
-        push(q, &pv);
+    /* los vértices se escriben directamente en la cola (sin uno local y memcpy) */
+    pv = (pvr_vertex_t *) &q->u[q->n];
+    for (i = 0; i < 3; i++, pv++) {
+        pv->flags = (i == 2) ? PVR_CMD_VERTEX_EOL : PVR_CMD_VERTEX;
+        pv->x = v[i]->x;
+        pv->y = v[i]->y;
+        pv->z = v[i]->z * zs;
+        pv->u = v[i]->u * sUScale;
+        pv->v = v[i]->v * sVScale;
+        pv->argb = v[i]->argb;
+        pv->oargb = v[i]->oargb;
     }
+    q->n += 3;
     sStats.tris++;
 }
 
@@ -352,6 +448,7 @@ void gb_frame_begin(unsigned clear_argb) {
     (void) clear_argb;
     sQ[0].n = sQ[1].n = 0;
     sQ[0].hdr_valid = sQ[1].hdr_valid = 0;
+    sStateValid = 0;
     sFrame++;
 }
 
@@ -360,19 +457,28 @@ unsigned gPortStage;
 void gb_frame_end(void) {
     int l, i;
 
+    unsigned t0 = NOW_US(), t1;
+
     gPortStage = 20;
     pvr_wait_ready();
+    t1 = NOW_US();
+    gPortProfWait += t1 - t0;
     gPortStage = 21;
     pvr_scene_begin();
     for (l = 0; l < 2; l++) {
         pvr_list_begin(l ? PVR_LIST_TR_POLY : PVR_LIST_OP_POLY);
-        for (i = 0; i < sQ[l].n; i++)
-            pvr_prim(&sQ[l].u[i], 32);
+        /* en bloques (store queues directas al TA), no de 32 en 32 bytes */
+        for (i = 0; i < sQ[l].n; i += 256) {
+            int k = sQ[l].n - i < 256 ? sQ[l].n - i : 256;
+
+            pvr_prim(&sQ[l].u[i], (size_t) k * 32);
+        }
         pvr_list_finish();
     }
     gPortStage = 22;
     pvr_scene_finish();
     gPortStage = 23;
+    gPortProfSubmit += NOW_US() - t1;
     sStats.frames++;
 }
 

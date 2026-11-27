@@ -49,6 +49,11 @@ typedef struct {
 } RVtx;
 
 static RVtx sVtx[MAX_VTX];
+/* to_screen de cada vértice cargado, reutilizado entre los triángulos que lo comparten mientras no cambie nada de
+ * lo que usa (estado, combinador, tile, viewport): sScrGen sube con cada cambio; sVtxGen[i] = 0 al cargar. */
+static u32 sScrGen = 1;
+static u32 sVtxGen[MAX_VTX];      /* == sScrGen: sScr[i] vale */
+static GbVert sScr[MAX_VTX];
 static float sMv[MTX_STACK][4][4];
 static s32 sMvTop;
 static float sProj[4][4];
@@ -223,6 +228,7 @@ static void do_vtx(u32 w0, u32 w1) {
     for (i = 0; i < n; i++) {
         Vtx_t* v = &src[i].v;
         RVtx* d = &sVtx[v0 + i];
+        sVtxGen[v0 + i] = 0;
         float x = v->ob[0], y = v->ob[1], z = v->ob[2];
 
         d->x = x * m[0][0] + y * m[1][0] + z * m[2][0] + m[3][0];
@@ -297,11 +303,16 @@ static Col col_of(u32 rgba) {
     return c;
 }
 
+/* prim, env y prim LOD como floats: se recalculan en combine_decode (cada cambio de estado), no en cada vértice */
+static Col sPrimC, sEnvC;
+static float sPrimLodF;
+
 /* entrada del combinador de color (A/B/C/D); kind: 0 = A, 1 = B, 2 = C, 3 = D */
 static float cc_in(s32 kind, s32 code, s32 ch, const Col* comb, const Col* tex, const Col* shade) {
-    Col prim = col_of(sPrim), env = col_of(sEnv);
-    const float* pc = &prim.r;
-    const float* ec = &env.r;
+    const Col* prim = &sPrimC;
+    const Col* env = &sEnvC;
+    const float* pc = &prim->r;
+    const float* ec = &env->r;
     const float* sc = &shade->r;
     const float* tc = &tex->r;
     const float* cc = &comb->r;
@@ -315,10 +326,10 @@ static float cc_in(s32 kind, s32 code, s32 ch, const Col* comb, const Col* tex, 
             case G_CCMUX_ENVIRONMENT: return ec[ch];
             case G_CCMUX_COMBINED_ALPHA: return comb->a;
             case G_CCMUX_TEXEL0_ALPHA: case G_CCMUX_TEXEL1_ALPHA: return tex->a;
-            case G_CCMUX_PRIMITIVE_ALPHA: return prim.a;
+            case G_CCMUX_PRIMITIVE_ALPHA: return prim->a;
             case G_CCMUX_SHADE_ALPHA: return shade->a;
-            case G_CCMUX_ENV_ALPHA: return env.a;
-            case G_CCMUX_PRIM_LOD_FRAC: return sPrimLod / 255.0f;
+            case G_CCMUX_ENV_ALPHA: return env->a;
+            case G_CCMUX_PRIM_LOD_FRAC: return sPrimLodF;
             case G_CCMUX_LOD_FRACTION: return 0.0f;
             default: return 0.0f;
         }
@@ -339,10 +350,10 @@ static float ac_in(s32 kind, s32 code, const Col* comb, const Col* tex, const Co
     switch (code) {
         case 0: return (kind == 2) ? 0.0f : comb->a;    /* C: LOD_FRACTION */
         case 1: case 2: return tex->a;
-        case 3: return col_of(sPrim).a;
+        case 3: return sPrimC.a;
         case 4: return shade->a;
-        case 5: return col_of(sEnv).a;
-        case 6: return (kind == 2) ? sPrimLod / 255.0f : 1.0f;
+        case 5: return sEnvC.a;
+        case 6: return (kind == 2) ? sPrimLodF : 1.0f;
         default: return 0.0f;
     }
 }
@@ -370,6 +381,8 @@ static Col cc_cycle(const s32* c, const s32* a, const Col* comb, const Col* tex,
 static s32 sCC[2][4], sAC[2][4];
 static s32 sTwoCycle, sUsesTex;
 
+static void combine_compile(void);
+
 static void combine_decode(void) {
     u32 w0 = sCombine0, w1 = sCombine1;
     s32 i;
@@ -379,6 +392,10 @@ static void combine_decode(void) {
     sCC[1][0] = (w0 >> 5) & 0xF;  sCC[1][1] = (w1 >> 24) & 0xF; sCC[1][2] = w0 & 0x1F;         sCC[1][3] = (w1 >> 6) & 7;
     sAC[1][0] = (w1 >> 21) & 7;   sAC[1][1] = (w1 >> 3) & 7;    sAC[1][2] = (w1 >> 18) & 7;    sAC[1][3] = w1 & 7;
     sTwoCycle = ((sOmH >> G_MDSFT_CYCLETYPE) & 3) == 1;
+    sPrimC = col_of(sPrim);
+    sEnvC = col_of(sEnv);
+    sPrimLodF = sPrimLod / 255.0f;
+    combine_compile();
     sUsesTex = 0;
     for (i = 0; i < (sTwoCycle ? 2 : 1); i++) {
         s32 k;
@@ -398,16 +415,101 @@ static void combine_decode(void) {
     }
 }
 
+/* El combinador "compilado": cada entrada (ciclo, canal, A/B/C/D) es un índice a sR, la tabla de registros, que
+ * por vértice solo cambia en shade, textura y combinado. Mismas reglas que cc_in/ac_in, pero se resuelven una vez
+ * por estado y no en cada vértice. */
+enum { R_SH = 0, R_TX = 4, R_CB = 5, R_PR = 9, R_EN = 13, R_ZERO = 17, R_ONE = 18, R_PLOD = 19, R_N = 20 };
+static float sR[R_N];
+static u8 sCi[2][3][4], sAi[2][4];
+
+static u8 cc_idx(s32 kind, s32 code, s32 ch) {
+    if (kind == 2) {
+        switch (code) {
+            case G_CCMUX_COMBINED: return R_CB + ch;
+            case G_CCMUX_TEXEL0: case G_CCMUX_TEXEL1: return R_TX;
+            case G_CCMUX_PRIMITIVE: return R_PR + ch;
+            case G_CCMUX_SHADE: return R_SH + ch;
+            case G_CCMUX_ENVIRONMENT: return R_EN + ch;
+            case G_CCMUX_COMBINED_ALPHA: return R_CB + 3;
+            case G_CCMUX_TEXEL0_ALPHA: case G_CCMUX_TEXEL1_ALPHA: return R_TX;
+            case G_CCMUX_PRIMITIVE_ALPHA: return R_PR + 3;
+            case G_CCMUX_SHADE_ALPHA: return R_SH + 3;
+            case G_CCMUX_ENV_ALPHA: return R_EN + 3;
+            case G_CCMUX_PRIM_LOD_FRAC: return R_PLOD;
+            default: return R_ZERO;
+        }
+    }
+    switch (code) {
+        case G_CCMUX_COMBINED: return R_CB + ch;
+        case G_CCMUX_TEXEL0: case G_CCMUX_TEXEL1: return R_TX;
+        case G_CCMUX_PRIMITIVE: return R_PR + ch;
+        case G_CCMUX_SHADE: return R_SH + ch;
+        case G_CCMUX_ENVIRONMENT: return R_EN + ch;
+        case 6: return (kind == 1) ? R_ZERO : R_ONE;
+        default: return R_ZERO;
+    }
+}
+
+static u8 ac_idx(s32 kind, s32 code) {
+    switch (code) {
+        case 0: return (kind == 2) ? R_ZERO : R_CB + 3;
+        case 1: case 2: return R_TX;
+        case 3: return R_PR + 3;
+        case 4: return R_SH + 3;
+        case 5: return R_EN + 3;
+        case 6: return (kind == 2) ? R_PLOD : R_ONE;
+        default: return R_ZERO;
+    }
+}
+
+static void combine_compile(void) {
+    s32 c, ch, k;
+
+    for (c = 0; c < 2; c++) {
+        for (k = 0; k < 4; k++) {
+            for (ch = 0; ch < 3; ch++) {
+                sCi[c][ch][k] = cc_idx(k, sCC[c][k], ch);
+            }
+            sAi[c][k] = ac_idx(k, sAC[c][k]);
+        }
+    }
+    sR[R_PR + 0] = sPrimC.r; sR[R_PR + 1] = sPrimC.g; sR[R_PR + 2] = sPrimC.b; sR[R_PR + 3] = sPrimC.a;
+    sR[R_EN + 0] = sEnvC.r;  sR[R_EN + 1] = sEnvC.g;  sR[R_EN + 2] = sEnvC.b;  sR[R_EN + 3] = sEnvC.a;
+    sR[R_ZERO] = 0.0f;
+    sR[R_ONE] = 1.0f;
+    sR[R_PLOD] = sPrimLodF;
+}
+
+static inline void cycle_eval(s32 c, float* o) {
+    s32 ch;
+
+    for (ch = 0; ch < 3; ch++) {
+        const u8* i = sCi[c][ch];
+
+        o[ch] = (sR[i[0]] - sR[i[1]]) * sR[i[2]] + sR[i[3]];
+    }
+    o[3] = (sR[sAi[c][0]] - sR[sAi[c][1]]) * sR[sAi[c][2]] + sR[sAi[c][3]];
+}
+
 /* color de salida para una shade dada, con la textura a t (0 o 1, en color y en alfa) */
 static Col combine_eval(const Col* shade, float t) {
-    Col tex = { t, t, t, t };
-    Col zero = { 0, 0, 0, 0 };
-    Col c1 = cc_cycle(sCC[0], sAC[0], &zero, &tex, shade);
+    Col o;
 
+    sR[R_SH + 0] = shade->r;
+    sR[R_SH + 1] = shade->g;
+    sR[R_SH + 2] = shade->b;
+    sR[R_SH + 3] = shade->a;
+    sR[R_TX] = t;
+    sR[R_CB + 0] = sR[R_CB + 1] = sR[R_CB + 2] = sR[R_CB + 3] = 0.0f;
+    cycle_eval(0, &o.r);
     if (sTwoCycle) {
-        c1 = cc_cycle(sCC[1], sAC[1], &c1, &tex, shade);
+        sR[R_CB + 0] = o.r;
+        sR[R_CB + 1] = o.g;
+        sR[R_CB + 2] = o.b;
+        sR[R_CB + 3] = o.a;
+        cycle_eval(1, &o.r);
     }
-    return c1;
+    return o;
 }
 
 static u32 pack(float r, float g, float b, float a) {
@@ -419,6 +521,7 @@ static u32 pack(float r, float g, float b, float a) {
 
 static s32 sStateDirty = 1;
 static GbState sState;
+
 
 static const u8* tile_texture(GbTexture* tx, Tile* t) {
     s32 i;
@@ -465,8 +568,12 @@ static const u8* tile_texture(GbTexture* tx, Tile* t) {
     return tx->addr;
 }
 
+u32 gPortProfStates, gPortProfClipN;
+
 static void state_update(void) {
     u32 cyc = (sOmH >> G_MDSFT_CYCLETYPE) & 3;
+
+    gPortProfStates++;
     u32 bl;
     s32 a, m, b;
 
@@ -509,6 +616,24 @@ static void state_update(void) {
           (unsigned) sPrim, (unsigned) sEnv);
     gb_set_state(&sState);
     sStateDirty = 0;
+    {
+        /* lo que usa to_screen además del viewport: combinador, colores, tile actual, con textura o sin ella */
+        static u32 last[10];
+        Tile* tl = &sTiles[sTexture.tile];
+        u32 sig[10] = { sCombine0, sCombine1, sPrim, sEnv, sPrimLod | (sOmH & (3 << G_MDSFT_CYCLETYPE)),
+                        (u32) sTexture.tile | ((u32) sState.textured << 8), (u32) tl->shifts | ((u32) tl->shiftt << 8),
+                        (u32) tl->uls, (u32) tl->ult, 0 };
+
+        s32 k, diff = 0;
+
+        for (k = 0; k < 10; k++) {
+            diff |= sig[k] != last[k];
+            last[k] = sig[k];
+        }
+        if (diff) {
+            sScrGen++;
+        }
+    }
 }
 
 /* ------------------------------------------------------------------ triángulos */
@@ -600,10 +725,18 @@ static void trace(const char* fmt, ...) {
 }
 
 static u32 sCntTri, sCntClip, sCntCull;
-
+unsigned long long gPortProfVtxNs, gPortProfTriNs;
+u32 gPortProfVtxN, gPortProfTriN;
+static void draw_tri_(s32 i0, s32 i1, s32 i2);
 static void draw_tri(s32 i0, s32 i1, s32 i2) {
-    RVtx in[3], poly[6];
-    GbVert sv[6];
+    /* (sin cronómetro por triángulo: leer el temporizador cuesta más que el triángulo) */
+    draw_tri_(i0, i1, i2);
+    gPortProfTriN++;
+}
+
+static void draw_tri_(s32 i0, s32 i1, s32 i2) {
+    const GbVert* sv[6];
+    GbVert clipv[6];
     s32 n, i;
     float area;
 
@@ -611,47 +744,70 @@ static void draw_tri(s32 i0, s32 i1, s32 i2) {
     if (i0 >= MAX_VTX || i1 >= MAX_VTX || i2 >= MAX_VTX) {
         return;
     }
-    in[0] = sVtx[i0];
-    in[1] = sVtx[i1];
-    in[2] = sVtx[i2];
-    if (in[0].z + in[0].w < 0.0f || in[1].z + in[1].w < 0.0f || in[2].z + in[2].w < 0.0f) {
+    if (sVtx[i0].z + sVtx[i0].w < 0.0f || sVtx[i1].z + sVtx[i1].w < 0.0f || sVtx[i2].z + sVtx[i2].w < 0.0f) {
+        /* cruza el plano cercano: el único caso que copia vértices */
+        RVtx in[3], poly[6];
+
+        gPortProfClipN++;
+        in[0] = sVtx[i0];
+        in[1] = sVtx[i1];
+        in[2] = sVtx[i2];
         n = clip_near(in, 3, poly);
         if (n < 3) {
             sCntClip++;
             return;
         }
-    } else {
-        poly[0] = in[0];
-        poly[1] = in[1];
-        poly[2] = in[2];
-        n = 3;
-    }
-    if (sStateDirty) {
-        state_update();
-    }
-    for (i = 0; i < n; i++) {
-        if (poly[i].w < 1e-5f) {
-            poly[i].w = 1e-5f;
+        if (sStateDirty) {
+            state_update();
         }
-        to_screen(&sv[i], &poly[i]);
+        for (i = 0; i < n; i++) {
+            if (poly[i].w < 1e-5f) {
+                poly[i].w = 1e-5f;
+            }
+            to_screen(&clipv[i], &poly[i]);
+            sv[i] = &clipv[i];
+        }
+    } else {
+        const s32 idx[3] = { i0, i1, i2 };
+
+        if (sStateDirty) {
+            state_update();
+        }
+        n = 3;
+        for (i = 0; i < 3; i++) {
+            s32 k = idx[i];
+
+            if (sVtxGen[k] != sScrGen) {
+                if (sVtx[k].w < 1e-5f) {
+                    RVtx v = sVtx[k];
+
+                    v.w = 1e-5f;
+                    to_screen(&sScr[k], &v);
+                } else {
+                    to_screen(&sScr[k], &sVtx[k]);
+                }
+                sVtxGen[k] = sScrGen;
+            }
+            sv[i] = &sScr[k];
+        }
     }
     /* descarte de caras: en pantalla con y hacia abajo, las de N64 de frente van en sentido antihorario */
-    area = (sv[1].x - sv[0].x) * (sv[2].y - sv[0].y) - (sv[2].x - sv[0].x) * (sv[1].y - sv[0].y);
+    area = (sv[1]->x - sv[0]->x) * (sv[2]->y - sv[0]->y) - (sv[2]->x - sv[0]->x) * (sv[1]->y - sv[0]->y);
     if (((sGeom & G_CULL_BACK) && area > 0.0f) || ((sGeom & G_CULL_FRONT) && area < 0.0f)) {
         if (sTracing && sCntCull < 3) {
-            trace(" CULL (%.0f,%.0f,%.4f) (%.0f,%.0f) (%.0f,%.0f) w=%.1f g=%06x\n", sv[0].x, sv[0].y, sv[0].z, sv[1].x,
-                  sv[1].y, sv[2].x, sv[2].y, poly[0].w, (unsigned) sGeom);
+            trace(" CULL (%.0f,%.0f,%.4f) (%.0f,%.0f) (%.0f,%.0f) g=%06x\n", sv[0]->x, sv[0]->y, sv[0]->z, sv[1]->x,
+                  sv[1]->y, sv[2]->x, sv[2]->y, (unsigned) sGeom);
         }
         sCntCull++;
         return;
     }
     for (i = 1; i + 1 < n; i++) {
-        gb_triangle(&sv[0], &sv[i], &sv[i + 1]);
+        gb_triangle(sv[0], sv[i], sv[i + 1]);
         gPortTris++;
     }
     if (sTracing && sTraceTris++ < 400) {
-        trace(" T (%.0f,%.0f,%.4f) (%.0f,%.0f) (%.0f,%.0f) c=%08x o=%08x uv=%.1f,%.1f w=%.1f\n", sv[0].x, sv[0].y,
-              sv[0].z, sv[1].x, sv[1].y, sv[2].x, sv[2].y, sv[0].argb, sv[0].oargb, sv[0].u, sv[0].v, poly[0].w);
+        trace(" T (%.0f,%.0f,%.4f) (%.0f,%.0f) (%.0f,%.0f) c=%08x o=%08x uv=%.1f,%.1f\n", sv[0]->x, sv[0]->y,
+              sv[0]->z, sv[1]->x, sv[1]->y, sv[2]->x, sv[2]->y, sv[0]->argb, sv[0]->oargb, sv[0]->u, sv[0]->v);
     }
 }
 
@@ -876,8 +1032,14 @@ static void run_dl(Gfx* dl) {
             case G_RDPFULLSYNC: case G_SETKEYGB: case G_SETKEYR: case G_SETCONVERT: case G_SETSCISSOR:
             case G_LOAD_UCODE: case G_CULLDL: case G_SPECIAL_1: case G_SPECIAL_2: case G_SPECIAL_3: case G_DMA_IO:
                 break;
-            case G_VTX:
+            case G_VTX: {
+                unsigned long long t0 = plat_time_ns();
+
                 do_vtx(w0, w1);
+                gPortProfVtxNs += plat_time_ns() - t0;
+                gPortProfVtxN += (w0 >> 12) & 0xFF;
+                break;
+            }
                 break;
             case G_TRI1:
                 draw_tri(((w0 >> 16) & 0xFF) / 2, ((w0 >> 8) & 0xFF) / 2, (w0 & 0xFF) / 2);
@@ -891,6 +1053,7 @@ static void run_dl(Gfx* dl) {
 
                 if (v < MAX_VTX) {
                     if (where == G_MWO_POINT_RGBA) {
+                        sVtxGen[v] = 0;
                         sVtx[v].r = (w1 >> 24) / 255.0f;
                         sVtx[v].g = ((w1 >> 16) & 0xFF) / 255.0f;
                         sVtx[v].b = ((w1 >> 8) & 0xFF) / 255.0f;
@@ -952,6 +1115,7 @@ static void run_dl(Gfx* dl) {
                     sVp.sy = vp->vscale[1] / 4.0f;
                     sVp.tx = vp->vtrans[0] / 4.0f;
                     sVp.ty = vp->vtrans[1] / 4.0f;
+                    sScrGen++;
                     trace(" VP %08x -> %p: %d %d %d / %d %d %d\n", (unsigned) w1, (void*) p, vp->vscale[0],
                           vp->vscale[1], vp->vscale[2], vp->vtrans[0], vp->vtrans[1], vp->vtrans[2]);
                 } else if (idx == G_MV_LIGHT) {
@@ -1124,6 +1288,10 @@ static void run_dl(Gfx* dl) {
 
 static s32 sInit;
 u32 gPortFrames;
+/* perfil (us acumulados): intérprete de la lista (incluye gb_set_state/gb_triangle), y en gfx_pvr.c hash de
+ * texturas, cabeceras, espera a la PVR y envío; gPortAudioUs en ultra.c */
+u32 gPortProfDl;
+static unsigned long long sProfT0, sProfLast;
 
 void fzx_gfx_task(OSTask* t) {
     if (!sInit) {
@@ -1145,7 +1313,9 @@ void fzx_gfx_task(OSTask* t) {
         trace("cuadro %u, modo %x\n", (unsigned) gPortFrames, (unsigned) gGameMode);
     }
     { extern unsigned gPortStage; gPortStage = 10; }
+    sProfT0 = plat_time_ns();
     run_dl(resolve((u32) t->t.data_ptr));
+    gPortProfDl += (u32) ((plat_time_ns() - sProfT0) / 1000);
     { extern unsigned gPortStage; gPortStage = 11; }
     if (sTracing) {
         trace("fin: tri %u clip %u cull %u vtx %u mtx %u\n", (unsigned) sCntTri, (unsigned) sCntClip,
@@ -1160,5 +1330,26 @@ void fzx_gfx_task(OSTask* t) {
         gb_stats(&st);
         plat_log("fzx: gfx: cuadro %u, %u triángulos en total, texturas %u hechas / %u reusadas, VRAM libre %u\n",
                  (unsigned) gPortFrames, (unsigned) gPortTris, st.textures_made, st.textures_hit, st.vram_free);
+        {
+            extern unsigned gPortProfHash, gPortProfState, gPortProfWait, gPortProfSubmit;
+            extern u32 gPortAudioUs;
+            static u32 lastAudio;
+            unsigned long long now = plat_time_ns();
+            u32 n = sProfLast ? 300 : 1;
+            u32 frame = sProfLast ? (u32) ((now - sProfLast) / 1000 / n) : 0;
+
+            plat_log("fzx: perfil (us/cuadro): cuadro %u, lista %u (hash %u, estado %u, vtx %u en %u, tri %u en %u), "
+                     "estados %u, recortados %u, espera PVR %u, envio %u, audio %u\n",
+                     (unsigned) frame, (unsigned) (gPortProfDl / n), gPortProfHash / n, gPortProfState / n,
+                     (unsigned) (gPortProfVtxN / n), (unsigned) (gPortProfVtxNs / 1000 / n),
+                     (unsigned) (gPortProfTriN / n), (unsigned) (gPortProfTriNs / 1000 / n),
+                     (unsigned) (gPortProfStates / n), (unsigned) (gPortProfClipN / n), gPortProfWait / n, gPortProfSubmit / n, (unsigned) ((gPortAudioUs - lastAudio) / n));
+            gPortProfVtxNs = gPortProfTriNs = 0;
+            gPortProfVtxN = gPortProfTriN = gPortProfStates = gPortProfClipN = 0;
+            gPortProfDl = 0;
+            gPortProfHash = gPortProfState = gPortProfWait = gPortProfSubmit = 0;
+            lastAudio = gPortAudioUs;
+            sProfLast = now;
+        }
     }
 }

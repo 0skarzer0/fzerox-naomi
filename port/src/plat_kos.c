@@ -102,9 +102,23 @@ unsigned long long plat_time_ns(void) { return timer_ns_gettime64(); }
 
 static void (*vblank_fn)(void);
 
+/* Muestreo de PC para perfilar (tools/pcprof.py): en cada vblank, el PC y el PR interrumpidos */
+#define PCPROF_N 8192
+uint32_t gPortPcProf[PCPROF_N][2];
+uint32_t gPortPcProfPos;
+int gPortPcProfOn = 1;   /* el piloto de pruebas (FZX_AUTOPAD) lo deja a 1 solo en carrera */
+
 static void vblank_irq(uint32_t code, void *data) {
+    irq_context_t *c = irq_get_context();
+
     (void) code;
     (void) data;
+    if (c && gPortPcProfOn) {
+        uint32_t k = gPortPcProfPos++ % PCPROF_N;
+
+        gPortPcProf[k][0] = c->pc;
+        gPortPcProf[k][1] = c->pr;
+    }
     if (vblank_fn)
         vblank_fn();
     /* KOS no cambia de hilo cuando una interrupción despierta a alguien: el que espera el vblank despertaría en el

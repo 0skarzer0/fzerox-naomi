@@ -95,6 +95,22 @@ con riesgo de quedarse esperando. En Flycast la nave pasa de 700 km/h por las pl
 "GP RACE / NOVICE" (el "BAC9D" también salía de ahí). Prueba sin mandos: `make PORT_EXTRA=-DFZX_AUTOPAD` (en carrera,
 A siempre y B cada 2 s).
 
+**Rendimiento, primera pasada (2026-11-27, solo Flycast):** en placa el título iba a ~14 cuadros/s. Medido con un
+perfil por cuadro en el log (`fzx: perfil (us/cuadro)`: lista, hash de texturas, estados, vértices, envío, audio)
+y con **muestreo de PC** (`plat_kos.c` guarda PC y PR en cada vblank en `gPortPcProf`; `tools/pcprof.py RAM ELF`
+los agrupa por función; vale igual con un volcado de la placa). Lo que costaba y lo hecho:
+- **Hash de texturas** (60-70 % del título): FNV byte a byte de cada textura en cada cambio de estado. Ahora por
+  palabras, una de cada 8 en las grandes, y como mucho una vez por textura y cuadro (memo por dirección).
+- **Combinador por vértice**: cada vértice de cada triángulo evaluaba el combinador dos veces reconvirtiendo
+  prim/env (8 divisiones por entrada). Ahora se "compila" por estado (índices a una tabla de registros) y el
+  resultado en pantalla de cada vértice se reutiliza mientras no cambie lo que usa (`sScrGen`).
+- **Copias**: `draw_tri` trabaja con punteros (solo copia al recortar), `gb_triangle` escribe en la cola sin
+  `memcpy`, la cola va a la PVR en bloques de 256 unidades (antes, una llamada por cada 32 bytes), `gb_set_state`
+  no recompila si el estado es igual, `fzx_is_mio0` con memo.
+Resultado en Flycast: título 16,5 -> 7 ms de lista (el cuadro lo marca el vblank); un menú pesado 33,8 -> 19,4 ms;
+la carrera con 60 % de tiempo libre. En placa la memoria pesa más que en Flycast (el hash, sobre todo), así que la
+mejora real hay que medirla allí.
+
 ### Fase 2 (2026-11-27): hecha, en Flycast; la carrera ya se ve
 
 En Flycast se ve todo lo que se ha probado: título (logotipo sobre el cómic, "PUSH START"), menú principal,

@@ -35,18 +35,30 @@ static struct {
     unsigned lo, hi;
 } sMio0[MIO0_RANGES];
 static int sMio0Next;
+static unsigned sMio0Lo = 0xFFFFFFFF, sMio0Hi;
+static unsigned sMio0Gen = 1;   /* caja que contiene todos los rangos: descarte rápido */
 
 void fzx_mio0_forget(const void *p, unsigned n) {
     unsigned lo = (unsigned) p, hi = lo + n;
     int i;
 
+    if (hi <= sMio0Lo || lo >= sMio0Hi)
+        return;   /* fuera de la caja: no toca ningún rango (las DMA del audio, casi todas) */
     for (i = 0; i < MIO0_RANGES; i++)
-        if (sMio0[i].hi > lo && sMio0[i].lo < hi)
+        if (sMio0[i].hi > lo && sMio0[i].lo < hi) {
             sMio0[i].lo = sMio0[i].hi = 0;
+            sMio0Gen++;
+        }
 }
 
-int fzx_is_mio0(const void *p, unsigned n) {
-    unsigned lo = (unsigned) p, hi = lo + n;
+/* memo de las últimas consultas (el renderer pregunta por las mismas texturas cada cuadro); sMio0Gen (arriba)
+ * cambia con cada mio0Decode o DMA encima, y entonces el memo deja de valer */
+static struct {
+    unsigned lo, n, gen;
+    int r;
+} sMio0Memo[64];
+
+static int is_mio0_scan(unsigned lo, unsigned hi) {
     int i;
 
     for (i = 0; i < MIO0_RANGES; i++)
@@ -55,10 +67,29 @@ int fzx_is_mio0(const void *p, unsigned n) {
     return 0;
 }
 
+int fzx_is_mio0(const void *p, unsigned n) {
+    unsigned lo = (unsigned) p, hi = lo + n, k = (lo >> 4) & 63;
+
+    if (lo < sMio0Lo || hi > sMio0Hi)
+        return 0;
+    if (sMio0Memo[k].gen != sMio0Gen || sMio0Memo[k].lo != lo || sMio0Memo[k].n != n) {
+        sMio0Memo[k].lo = lo;
+        sMio0Memo[k].n = n;
+        sMio0Memo[k].gen = sMio0Gen;
+        sMio0Memo[k].r = is_mio0_scan(lo, hi);
+    }
+    return sMio0Memo[k].r;
+}
+
 static void mio0_record(const void *p, unsigned n) {
     fzx_mio0_forget(p, n);
+    sMio0Gen++;
     sMio0[sMio0Next].lo = (unsigned) p;
     sMio0[sMio0Next].hi = (unsigned) p + n;
+    if ((unsigned) p < sMio0Lo)
+        sMio0Lo = (unsigned) p;
+    if ((unsigned) p + n > sMio0Hi)
+        sMio0Hi = (unsigned) p + n;
     sMio0Next = (sMio0Next + 1) % MIO0_RANGES;
 }
 

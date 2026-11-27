@@ -524,13 +524,16 @@ void osContGetReadData(OSContPad* pads) {
          * secuencia que llega a la carrera), en carrera mantiene A y pulsa B (turbo) 5 cuadros cada 2 s. */
         {
             extern s32 gGameMode;
+            extern int gPortPcProfOn;
             static unsigned starts, prev, n;
 
             if ((buttons & START_BUTTON) && !(prev & START_BUTTON)) {
                 starts++;
             }
             prev = buttons;
+            gPortPcProfOn = 0;   /* el muestreo de PC, solo en carrera */
             if (starts >= 10 && (gGameMode & 0xFF) == 1) {
+                gPortPcProfOn = 1;
                 n++;
                 buttons |= A_BUTTON;
                 if (n % 120 < 5) {
