@@ -163,14 +163,23 @@ solo hasta llegar a la carrera; trazas de un cuadro con `-DFZX_TRACE_MODE=1 -DFZ
 - **Recorte:** además del plano cercano, contra w >= 0,1 y una banda de guarda de 3 pantallas, como el RSP: la PVR
   pinta mal vértices a decenas de miles de píxeles.
 
+**Tercera prueba en placa (2026-11-27, noche): el turbo ya suena.** No se oían el turbo (el propio y el de los
+rivales), el derrape, la alarma de poca energía ni la explosión; el resto de efectos de la nave sí (mismo canal 10).
+Medido en la placa con contadores temporales por efecto: esas notas se repartían, con una muestra correcta (igual
+byte a byte que `AUDIOTBL.BIN`) y señal hasta el mezclador, pero con volumen 0 casi todo el tiempo (el turbo, un 13 %
+de las actualizaciones con volumen; el derrape y la alarma, 0 %; los que se oían, ~100 %). Flycast hacía lo mismo.
+Causa: las **envolventes que van dentro de las secuencias** (`ASEQ_OP_LAYER_ENV` y `ASEQ_OP_CHAN_ENV` apuntan a
+bytes de la secuencia) quedaban en el orden de N64; las de los bancos ya están en el de la SH-4 porque los bancos se
+compilan desde C. `{1, 32700}` se leía `{256, -17537}` y la nota nacía muda. Arreglo (parche de la decomp,
+`seqplayer.c`, `AudioSeq_SeqEnvelope`): se usa una copia convertida por dirección de origen (48 huecos de 16 puntos),
+que se compara en cada uso por si en esa dirección hay otra secuencia. Probado en placa: se oyen todos.
+
 Sigue pendiente:
-- **Sin sonido de turbo.** Las notas sí salen: con un registro temporal de notas, el turbo (`NA_SE_7`, canal 10 del
-  reproductor 0, instrumento 7) reparte sus notas como los demás efectos, sin fallos de asignación, con una muestra
-  ADPCM en RAM (en el montón de audio, `medium` 0) de aspecto válido. No se pudo comprobar si se oye: silenciar los
-  demás canales deja el título esperando para siempre. Siguiente paso: grabar (`audio_wav.py`) solo la nota del
-  instrumento 7 (por ejemplo, anotando el número de nota en el HLE) para ver si el ADPCM o la envolvente la dejan en 0.
-- Un **panel blanco** sobre la pista de Mute City en algunos tramos (también en la versión de anoche); sin encontrar.
-- La selección de nave, medirla otra vez en placa.
+- Un **panel blanco** sobre la pista de Mute City en algunos tramos; sin encontrar.
+- **Lentitud de la selección de copa (Mute City en miniatura) a la de nave** (la del Blue Falcon girando va bien).
+  En Flycast, la miniatura son ~3.750 triángulos por cuadro (el doble que una carrera): la mitad del tiempo en
+  dibujarlos y un 12 % en cambios de estado. Medirla en placa (muestreo de PC con `FZX_AUTOPAD_HOLD`, que deja el
+  piloto automático quieto en un modo de juego dado tras `FZX_AUTOPAD_EXTRA` pulsaciones de START).
 
 ### Fase 2 (2026-11-27): hecha, en Flycast; la carrera ya se ve
 

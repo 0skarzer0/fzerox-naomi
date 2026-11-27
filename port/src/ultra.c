@@ -538,7 +538,23 @@ void osContGetReadData(OSContPad* pads) {
 
             /* fuera de carrera, pasado el arranque, pulsa START él solo (5 cuadros de cada 60) hasta llegar */
             t++;
-            if ((gGameMode & 0xFF) != 1 && t > 1500 && t % 60 < 5) {
+            extern s8 gTitleDemoState;
+            s32 racing = (gGameMode & 0xFF) >= 1 && (gGameMode & 0xFF) <= 5 && gTitleDemoState == 0;
+
+#ifdef FZX_AUTOPAD_HOLD
+            /* para medir un menú: al llegar a ese modo (GAMEMODE_*) deja de pulsar */
+            static unsigned h;
+
+            if ((gGameMode & 0x1F) == FZX_AUTOPAD_HOLD) {
+                t = 0;
+                h++;
+                /* FZX_AUTOPAD_EXTRA pulsaciones más (una cada 2 s), para entrar en la pantalla dentro de ese modo */
+                if (h % 120 < 5 && h / 120 >= 1 && h / 120 <= FZX_AUTOPAD_EXTRA) {
+                    buttons |= START_BUTTON;
+                }
+            }
+#endif
+            if (!racing && t > 1500 && t % 60 < 5) {
                 buttons |= START_BUTTON;
             }
             if ((buttons & START_BUTTON) && !(prev & START_BUTTON)) {
@@ -546,7 +562,18 @@ void osContGetReadData(OSContPad* pads) {
             }
             prev = buttons;
             gPortPcProfOn = 0;   /* el muestreo de PC, solo en carrera */
-            if ((gGameMode & 0xFF) == 1) {
+#ifdef FZX_AUTOPAD_HOLD
+            if (h > 120 * (FZX_AUTOPAD_EXTRA + 1)) {
+                gPortPcProfOn = 1;   /* y en el menú que se mide, ya quieto */
+            }
+#endif
+#ifdef FZX_SE7_TEST
+            if (racing && t % 60 == 0) {
+                extern void Audio_PlayerTriggerSEStart(u8 racerId, u8 sfxId);
+                Audio_PlayerTriggerSEStart(0, 7);   /* depuración: el sonido del turbo cada segundo */
+            }
+#endif
+            if (racing) {   /* carrera GP, práctica o VS (no la demo del título) */
                 gPortPcProfOn = 1;
                 n++;
                 buttons |= A_BUTTON;

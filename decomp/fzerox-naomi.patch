@@ -145,10 +145,85 @@ index 40d7cc2..c830695 100644
  
  void* AudioHeap_AllocTemporarySampleCache(size_t size, s32 fontId, void* sampleAddr, s8 medium) {
 diff --git a/src/audio/rom/lib/seqplayer.c b/src/audio/rom/lib/seqplayer.c
-index d0b3a94..2a55548 100644
+index d0b3a94..68c98f6 100644
 --- a/src/audio/rom/lib/seqplayer.c
 +++ b/src/audio/rom/lib/seqplayer.c
-@@ -1284,7 +1284,13 @@ void AudioSeq_SequenceChannelProcessScript(SequenceChannel* channel) {
+@@ -514,6 +514,50 @@ void AudioSeq_SeqLayerProcessScript(SequenceLayer* layer) {
+     }
+ }
+ 
++#ifdef NAOMI_HOST
++/* Las envolventes que traen las secuencias (órdenes de envolvente de capa y de canal) son bytes de la secuencia, en
++ * el orden de N64; las de los bancos ya están en el de la SH-4. Sin convertirlas, {1, 32700} se lee {256, -17537}:
++ * la nota nace con volumen 0 y no se oye (el turbo, el derrape, la alarma de energía, la explosión). Se usa una copia
++ * convertida por dirección de origen, que se revisa en cada uso por si en esa dirección hay ya otra secuencia. */
++#define SEQ_ENV_SLOTS 48
++#define SEQ_ENV_POINTS 16
++static EnvelopePoint sSeqEnv[SEQ_ENV_SLOTS][SEQ_ENV_POINTS];
++static u8* sSeqEnvSrc[SEQ_ENV_SLOTS];
++static s32 sSeqEnvNext;
++
++static EnvelopePoint* AudioSeq_SeqEnvelope(u8* src) {
++    s32 i, k;
++    s32 same = false;
++
++    for (i = 0; i < SEQ_ENV_SLOTS; i++) {
++        if (sSeqEnvSrc[i] == src) {
++            break;
++        }
++    }
++    if (i == SEQ_ENV_SLOTS) {
++        i = sSeqEnvNext;
++        sSeqEnvNext = (sSeqEnvNext + 1) % SEQ_ENV_SLOTS;
++        sSeqEnvSrc[i] = src;
++    } else {
++        same = true;
++    }
++    for (k = 0; k < SEQ_ENV_POINTS; k++) {
++        s16 delay = (s16) ((src[k * 4] << 8) | src[k * 4 + 1]);
++        s16 arg = (s16) ((src[k * 4 + 2] << 8) | src[k * 4 + 3]);
++
++        if (same && (sSeqEnv[i][k].delay != delay || sSeqEnv[i][k].arg != arg)) {
++            same = false;
++        }
++        sSeqEnv[i][k].delay = delay;
++        sSeqEnv[i][k].arg = arg;
++        if (delay <= 0) {   /* ADSR_DISABLE, ADSR_HANG, ADSR_GOTO, ADSR_RESTART: fin de la envolvente */
++            break;
++        }
++    }
++    return sSeqEnv[i];
++}
++#endif
++
+ void AudioSeq_SeqLayerProcessScriptStep1(SequenceLayer* layer) {
+     if (!layer->continuousNotes) {
+         Audio_SeqLayerNoteDecay(layer);
+@@ -673,7 +717,11 @@ s32 AudioSeq_SeqLayerProcessScriptStep2(SequenceLayer* layer) {
+ 
+             case ASEQ_OP_LAYER_ENV:
+                 cmdArg = AudioSeq_ScriptReadS16(state);
++#ifdef NAOMI_HOST
++                layer->adsr.envelope = AudioSeq_SeqEnvelope(seqPlayer->seqData + (u16) cmdArg);
++#else
+                 layer->adsr.envelope = (EnvelopePoint*) (seqPlayer->seqData + (u16) cmdArg);
++#endif
+                 /* fallthrough */
+             case ASEQ_OP_LAYER_RELEASERATE:
+                 layer->adsr.decayIndex = AudioSeq_ScriptReadU8(state);
+@@ -1152,7 +1200,11 @@ void AudioSeq_SequenceChannelProcessScript(SequenceChannel* channel) {
+ 
+                 case ASEQ_OP_CHAN_ENV:
+                     cmdArgU16 = (u16) cmdArgs[0];
++#ifdef NAOMI_HOST
++                    channel->adsr.envelope = AudioSeq_SeqEnvelope(&seqPlayer->seqData[cmdArgU16]);
++#else
+                     channel->adsr.envelope = (EnvelopePoint*) &seqPlayer->seqData[cmdArgU16];
++#endif
+                     break;
+ 
+                 case ASEQ_OP_CHAN_RELEASERATE:
+@@ -1284,7 +1336,13 @@ void AudioSeq_SequenceChannelProcessScript(SequenceChannel* channel) {
  
                  case ASEQ_OP_CHAN_LDSEQTOPTR:
                      cmdArgU16 = (u16) cmdArgs[0];
@@ -162,7 +237,7 @@ index d0b3a94..2a55548 100644
                      break;
  
                  case ASEQ_OP_CHAN_PTRTODYNTBL:
-@@ -1292,7 +1298,13 @@ void AudioSeq_SequenceChannelProcessScript(SequenceChannel* channel) {
+@@ -1292,7 +1350,13 @@ void AudioSeq_SequenceChannelProcessScript(SequenceChannel* channel) {
                      break;
  
                  case ASEQ_OP_CHAN_DYNTBLTOPTR:
