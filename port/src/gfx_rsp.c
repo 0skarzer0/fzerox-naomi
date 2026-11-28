@@ -229,7 +229,6 @@ static void do_vtx(u32 w0, u32 w1) {
     Tile* tl = &sTiles[sTexture.tile];
     float ss = sTexture.s * (1.0f / 65536.0f) / 32.0f;
     float ts = sTexture.t * (1.0f / 65536.0f) / 32.0f;
-    float fogA = 0.0f;
     s32 i;
 
     if (v0 < 0 || v0 + n > MAX_VTX) {
@@ -281,12 +280,7 @@ static void do_vtx(u32 w0, u32 w1) {
 
             sVtxOut[v0 + i] = d->z + d->w < 0.0f || d->w < W_MIN || d->x > g || d->x < -g || d->y > g || d->y < -g;
         }
-        if (sGeom & G_FOG) {
-            /* el RSP pone el factor de niebla en el alfa del sombreado (tras el color o la luz, más abajo) */
-            float f = d->w > 0.0f ? d->z / d->w * sFogM + sFogO : 255.0f;
 
-            fogA = f < 0.0f ? 0.0f : (f > 255.0f ? 1.0f : f * (1.0f / 255.0f));
-        }
 
         if (sGeom & G_LIGHTING) {
             Vtx_tn* vn = &src[i].n;
@@ -334,9 +328,6 @@ static void do_vtx(u32 w0, u32 w1) {
             d->a = v->cn[3] * (1.0f / 255.0f);
             d->u = v->tc[0] * ss;
             d->v = v->tc[1] * ts;
-        }
-        if (sGeom & G_FOG) {
-            d->a = fogA;
         }
         (void) tl;
     }
@@ -935,14 +926,23 @@ static void to_screen_col(GbVert* o, const RVtx* v) {
     Col shade = { v->r, v->g, v->b, v->a };
     Col f0, f1;
 
+    if (sGeom & G_FOG) {
+        /* con G_FOG el RSP pone en el alfa del sombreado el factor de niebla, z/w * fm + fo (0..255), calculado con la
+         * posición de cada vértice, también los que salen del recorte: interpolarlo desde uno de detrás de la cámara
+         * llenaba de niebla, a ratos, los trozos de pista junto a la nave */
+        float w = v->w < 1e-5f ? 1e-5f : v->w;
+        float f = v->z / w * sFogM + sFogO;
+
+        shade.a = f < 0.0f ? 0.0f : (f > 255.0f ? 1.0f : f * (1.0f / 255.0f));
+    }
     if (sState.decal_alpha) {
         f0 = combine_eval(&shade, 0.0f);   /* con la textura a 0: X, y el alfa (que no la usa) */
         o->argb = pack(f0.r, f0.g, f0.b, f0.a);
-        o->oargb = sState.fog ? c8(v->a) << 24 : 0;
+        o->oargb = sState.fog ? c8(shade.a) << 24 : 0;
         return;
     }
     if (sPolyOk) {
-        const float* sh = &v->r;
+        const float sh[4] = { shade.r, shade.g, shade.b, shade.a };
         float a0[4], d[4];
         s32 ch;
 
@@ -961,7 +961,7 @@ static void to_screen_col(GbVert* o, const RVtx* v) {
             o->oargb = 0;
         }
         if (sState.fog) {
-            o->oargb |= c8(v->a) << 24;   /* el factor de niebla (alfa del sombreado) */
+            o->oargb |= c8(shade.a) << 24;   /* el factor de niebla (alfa del sombreado) */
         }
         return;
     }
@@ -975,7 +975,7 @@ static void to_screen_col(GbVert* o, const RVtx* v) {
         o->oargb = 0;
     }
     if (sState.fog) {
-        o->oargb |= c8(v->a) << 24;
+        o->oargb |= c8(shade.a) << 24;
     }
 }
 
