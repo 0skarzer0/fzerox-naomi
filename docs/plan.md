@@ -228,6 +228,20 @@ Sigue pendiente:
   color de `G_SETFOGCOLOR` por cuadro. Mute City y Big Blue con neblina de lejos. **Sin probar en placa.**
 - Imágenes en la carpeta del usuario (`fzerox/`): `dc-fzerox_dc2naomict.bin.gz` (la del menú, sin contador; **sin
   subir a la .251**: el mueble estaba apagado) y `fzerox_contador.bin.gz` (con contador, para pruebas por `dcl.py`).
+- **Tarde del 2026-11-28, en placa:** niebla y adornos, bien. El parpadeo de la niebla junto a la nave venía de
+  interpolar el factor desde vértices de detrás de la cámara: ahora se calcula con la posición de cada vértice en
+  pantalla, también los del recorte (dcd5e92, probado). Medido con el contador: Select Course 27, Select Machine
+  15-19, ajustes 60, cuenta atrás 30-33, carrera sola 60, con 2 delante 51-60, con 23-27 delante 30-34.
+  **Música que petardea en Select Machine (y algo en Select Course):** grabado de la placa (`gPortAudioCapture`
+  congelada y leída con `pk.py`): un chasquido cada ~1650 muestras = 3 tareas de sonido. El juego da al AI el búfer
+  que rellenó la tarea de hace dos vueltas (`thread.c`); en la N64 ya ha corrido, aquí espera a que el hilo principal
+  acabe de dibujar (45 ms en Select Machine) y sale lo de hace tres vueltas. **Probado y descartado** (lo empeoraba;
+  quitado): copiar el búfer al acabar la tarea que lo rellena (la música petardeaba hasta en el título), colchón de
+  100 ms (`ARESERVE`), cola de avisos de sonido de 8 (el hilo de sonido descarta un aviso por vuelta a propósito) y
+  dar el cambio de búfer del VI por hecho al momento (más imágenes en Select Machine, 15 -> 19, pero peor sonido). El
+  hilo del stream no se retrasa (hueco máximo medido < 30 ms fuera del arranque). La salida de verdad es que el cuadro
+  quepa: dibujar menos tiempo por cuadro (el ELAN) o partir la tarea de gráficos para hacer el sonido en medio, como
+  el RSP.
 - Herramientas de Flycast para esto: `FZX_AUTOPAD_HOLD=n` (+ `FZX_AUTOPAD_EXTRA`) deja el piloto quieto en un modo;
   trazas con `-DFZX_TRACE_FRAME=n` o `-DFZX_TRACE_MODE/AT` (ahora con `SETTILE`, `TEXTURE` y `SETTIMG`). Ojo: el
   lanzador de Flycast usa la variable `EXTRA` (no pasarla al entorno), y el tiempo de una partida cambia entre
