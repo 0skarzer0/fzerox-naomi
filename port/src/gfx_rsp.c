@@ -424,6 +424,24 @@ static Col cc_cycle(const s32* c, const s32* a, const Col* comb, const Col* tex,
 
 static s32 sCC[2][4], sAC[2][4];
 static s32 sTwoCycle, sUsesTex;
+/* el combinador es (TEXEL0 - X) * TEXEL0_ALPHA + X (X: sombreado, primitivo o entorno) y el alfa no usa la textura: la
+ * textura donde es opaca y X donde no (adornos y paneles de los circuitos; con la aproximación tex * base + offset
+ * salían de color X entero: blancos) */
+static s32 sDecalA;
+
+static s32 decal_cycle(s32 c) {
+    s32 k;
+
+    if (sCC[c][0] != 1 || sCC[c][2] != 8 || sCC[c][1] != sCC[c][3] || sCC[c][1] < 3 || sCC[c][1] > 5) {
+        return 0;
+    }
+    for (k = 0; k < 4; k++) {
+        if (sAC[c][k] == 1 || sAC[c][k] == 2) {
+            return 0;
+        }
+    }
+    return 1;
+}
 
 static void combine_compile(void);
 static void poly_compile(void);
@@ -446,6 +464,7 @@ static void combine_decode(void) {
     sCC[1][0] = (w0 >> 5) & 0xF;  sCC[1][1] = (w1 >> 24) & 0xF; sCC[1][2] = w0 & 0x1F;         sCC[1][3] = (w1 >> 6) & 7;
     sAC[1][0] = (w1 >> 21) & 7;   sAC[1][1] = (w1 >> 3) & 7;    sAC[1][2] = (w1 >> 18) & 7;    sAC[1][3] = w1 & 7;
     sTwoCycle = ((sOmH >> G_MDSFT_CYCLETYPE) & 3) == 1;
+    sDecalA = decal_cycle(0) && (!sTwoCycle || decal_cycle(1));
 #ifdef FZX_TRACE_TEX1
     {
         /* depuración: trazar el primer cuadro (después de este) en el que el combinador usa TEXEL1 en carrera */
@@ -799,6 +818,7 @@ static void state_update(void) {
     }
     sState.background = sState.blend && !sState.depth_test && !sSeenZ;
     sState.overlay = !sState.blend && !sState.depth_test && !sState.depth_write && sSeenZ;
+    sState.decal_alpha = sState.textured && sDecalA;
     trace("S cc=%06x:%08x om=%06x:%08x g=%06x tex=%d", (unsigned) sCombine0, (unsigned) sCombine1, (unsigned) sOmH,
           (unsigned) sOmL, (unsigned) sGeom, sState.textured);
     if (sState.textured) {
@@ -901,6 +921,12 @@ static void to_screen_col(GbVert* o, const RVtx* v) {
     Col shade = { v->r, v->g, v->b, v->a };
     Col f0, f1;
 
+    if (sState.decal_alpha) {
+        f0 = combine_eval(&shade, 0.0f);   /* con la textura a 0: X, y el alfa (que no la usa) */
+        o->argb = pack(f0.r, f0.g, f0.b, f0.a);
+        o->oargb = 0;
+        return;
+    }
     if (sPolyOk) {
         const float* sh = &v->r;
         float a0[4], d[4];

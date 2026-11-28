@@ -374,7 +374,7 @@ void gb_set_state(const GbState *st) {
     if (sCurTex) {
         pvr_poly_cxt_txr(&cxt, list ? PVR_LIST_TR_POLY : PVR_LIST_OP_POLY, sCurTex->pvrfmt | PVR_TXRFMT_TWIDDLED,
                          sCurTex->pw, sCurTex->ph, sCurTex->vram, st->filter ? PVR_FILTER_BILINEAR : PVR_FILTER_NONE);
-        cxt.txr.env = PVR_TXRENV_MODULATEALPHA;
+        cxt.txr.env = st->decal_alpha ? PVR_TXRENV_DECAL : PVR_TXRENV_MODULATEALPHA;
         cxt.txr.uv_clamp = (st->tex.clamp_s ? PVR_UVCLAMP_U : 0) | (st->tex.clamp_t ? PVR_UVCLAMP_V : 0);
         cxt.txr.uv_flip = (st->tex.mirror_s ? PVR_UVFLIP_U : 0) | (st->tex.mirror_t ? PVR_UVFLIP_V : 0);
         sUScale = 1.0f / sCurTex->pw;
@@ -384,7 +384,7 @@ void gb_set_state(const GbState *st) {
     }
     cxt.gen.shading = PVR_SHADE_GOURAUD;
     cxt.gen.culling = PVR_CULLING_NONE;
-    cxt.gen.specular = (sCurTex && st->use_offset) ? PVR_SPECULAR_ENABLE : PVR_SPECULAR_DISABLE;
+    cxt.gen.specular = (sCurTex && st->use_offset && !st->decal_alpha) ? PVR_SPECULAR_ENABLE : PVR_SPECULAR_DISABLE;
     cxt.depth.comparison = (st->depth_test || st->background) ? PVR_DEPTHCMP_GEQUAL : PVR_DEPTHCMP_ALWAYS;
     cxt.depth.write = (st->depth_write && !st->background) ? PVR_DEPTHWRITE_ENABLE : PVR_DEPTHWRITE_DISABLE;
     if (list) {

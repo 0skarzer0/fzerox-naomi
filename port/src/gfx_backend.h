@@ -46,6 +46,9 @@ typedef struct {
     int background;      /* fondo translúcido dibujado antes que lo 3D: al fondo del todo y tapado por lo opaco */
     int overlay;         /* opaco sin profundidad dibujado después de lo 3D (HUD): a la lista translúcida, sin mezclar,
                           * para que respete el orden con lo translúcido del HUD */
+    int decal_alpha;     /* color = textura * alfa de textura + vértice * (1 - alfa de textura) (PVR_TXRENV_DECAL):
+                          * el combinador (TEXEL0 - X) * TEXEL0_ALPHA + X, que la PVR no puede hacer con tex * base +
+                          * offset; el vértice lleva X */
 } GbState;
 
 void gb_init(void);
