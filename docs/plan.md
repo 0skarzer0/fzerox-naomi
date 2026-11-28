@@ -125,7 +125,7 @@ Más arreglos de la misma noche:
   guarda 2 s después de la última escritura del juego (65 bloques). Guardar, visto en Flycast; cargar, sin probar.
 - `G_BRANCH_Z` hecho (Z de pantalla contra el umbral), aunque en las carreras vistas el juego no lo usa.
 
-Pendiente: en pausa la nave se ve celeste y medio transparente; niebla y tijera (`gDPSetScissor`: la animación del
+Pendiente: en pausa la nave se ve celeste y medio transparente (¿arreglado con el modo DECAL? sin comprobar); niebla (hecha el 2026-11-28) y tijera (`gDPSetScissor`: la animación del
 menú de pausa y la pantalla partida de VS) sin hacer; medir en placa y probar los mandos `fzx` y la VMU.
 
 **Segunda prueba en placa (2026-11-27, mañana):** menú principal y música bien; la selección de nave lentísima
@@ -205,8 +205,33 @@ Sigue pendiente:
   transformación e iluminación, 100 MHz, que la placa tiene: `0xa8800000` = `0xe1ad0000`), que hoy no se usa: haría el
   trabajo de `do_vtx`, `draw_tri_`, `to_screen_*` y la cola (~60 % del cuadro). Referencia: `flycast/core/hw/pvr/elan.cpp`
   y `elan_struct.h` (Flycast lo emula; `naomi2.zip` ya está en `~/fctest`).
-- Adornos blancos (postes que giran, arcos que se atraviesan) en los circuitos, "desde siempre" (como el panel blanco
-  de Mute City): sin investigar.
+- ~~Adornos blancos~~ y ~~panel blanco de Mute City~~: arreglados (ver abajo), solo vistos en Flycast.
+
+**Salto de cuadros, TMEM, adornos blancos y niebla (2026-11-28, noche; desatendido la última parte):**
+- **Salto de cuadros adaptativo (d1d7201, probado en placa):** el original no lo tiene (un paso de lógica por vblank;
+  si no llega, cámara lenta). La cola de avisos de vblank del juego (`D_800DCAB0`) pasa de 1 a 6 en el parche de la
+  decomp; si al llegar una tarea hay avisos esperando, la lista se recorre solo para el estado del RDP, sin dibujar
+  (máx. 4 seguidos). El contador `-DFZX_FPS` enseña además, en azul, los cuadros del juego por segundo. La cifra de
+  imágenes baja algo respecto a antes: ahora el juego da 60 pasos por segundo y cada uno cuesta CPU. Cuadros saltados
+  más baratos (bd45b3c): sin matrices ni `G_MODIFYVTX`, y el historial de órdenes solo con `-DFZX_DLHIST` (Flycast,
+  Select Machine: 21,8 -> 23,3 imágenes/s con el juego a 60).
+- **TMEM como en la N64 (e9c1be0):** mapa de 512 palabras con la carga que escribió cada una, que se conserva entre
+  cuadros (antes, 8 cargas que se vaciaban en cada tarea y solo se encontraban por su tmem exacta). Cada nave carga 6
+  texturas en zonas distintas. En placa no cambió los adornos blancos (no eran eso), pero es lo correcto.
+- **Adornos blancos (7c4ef64):** torres, arcos "GO", paneles y postes usan el combinador
+  `(TEXEL0 - X) * TEXEL0_ALPHA + X` (la textura donde es opaca, X donde no). La aproximación `tex * base + offset`
+  los pintaba enteros de X, casi siempre blanco (el sombreado). Ahora `PVR_TXRENV_DECAL` (en KOS: RGB tex * A tex +
+  RGB vértice * (1 - A tex), alfa del vértice) con X en el vértice. Encontrado con un detector temporal de
+  triángulos casi blancos agrupado por combinador. **Sin probar en placa.**
+- **Niebla (b1eb3f8):** con `G_FOG`, el factor `z/w * fm + fo` (`G_MW_FOG`) va al alfa del sombreado como en el RSP; si
+  el mezclador funde con `G_BL_CLR_FOG` en el primer ciclo, `PVR_FOG_VERTEX` con el factor en el alfa del offset y el
+  color de `G_SETFOGCOLOR` por cuadro. Mute City y Big Blue con neblina de lejos. **Sin probar en placa.**
+- Imágenes en la carpeta del usuario (`fzerox/`): `dc-fzerox_dc2naomict.bin.gz` (la del menú, sin contador; **sin
+  subir a la .251**: el mueble estaba apagado) y `fzerox_contador.bin.gz` (con contador, para pruebas por `dcl.py`).
+- Herramientas de Flycast para esto: `FZX_AUTOPAD_HOLD=n` (+ `FZX_AUTOPAD_EXTRA`) deja el piloto quieto en un modo;
+  trazas con `-DFZX_TRACE_FRAME=n` o `-DFZX_TRACE_MODE/AT` (ahora con `SETTILE`, `TEXTURE` y `SETTIMG`). Ojo: el
+  lanzador de Flycast usa la variable `EXTRA` (no pasarla al entorno), y el tiempo de una partida cambia entre
+  compilaciones (no fiarse de "el cuadro N" de otra imagen).
 
 ### Fase 2 (2026-11-27): hecha, en Flycast; la carrera ya se ve
 
