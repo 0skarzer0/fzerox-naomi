@@ -1372,10 +1372,13 @@ static void run_dl(Gfx* dl) {
         u32 w0 = dl->words.w0, w1 = dl->words.w1;
         u32 op = w0 >> 24;
 
+#ifdef FZX_DLHIST
+        /* las últimas 32 órdenes, para gPortBadDL (cuesta tres escrituras por orden: solo para depurar) */
         sHist[sHistPos & 31][0] = (u32) dl;
         sHist[sHistPos & 31][1] = w0;
         sHist[sHistPos & 31][2] = w1;
         sHistPos++;
+#endif
         dl++;
         switch (op) {
             case G_NOOP: case G_SPNOOP: case G_RDPLOADSYNC: case G_RDPPIPESYNC: case G_RDPTILESYNC:
@@ -1406,7 +1409,7 @@ static void run_dl(Gfx* dl) {
             case G_MODIFYVTX: {
                 s32 where = (w0 >> 16) & 0xFF, v = (w0 & 0xFFFF) / 2;
 
-                if (v < MAX_VTX) {
+                if (v < MAX_VTX && !sSkipDraw) {
                     if (where == G_MWO_POINT_RGBA) {
                         sVtxGen[v] = 0;
                         sColGen[v] = 0;
@@ -1454,7 +1457,9 @@ static void run_dl(Gfx* dl) {
             }
                 break;
             case G_MTX:
-                do_mtx(w0, w1);
+                if (!sSkipDraw) {   /* (las matrices son estado del RSP: cada tarea pone las suyas) */
+                    do_mtx(w0, w1);
+                }
                 break;
             case G_MOVEWORD: {
                 s32 idx = (w0 >> 16) & 0xFF, off = w0 & 0xFFFF;
