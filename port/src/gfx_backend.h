@@ -49,6 +49,7 @@ typedef struct {
     int decal_alpha;     /* color = textura * alfa de textura + vértice * (1 - alfa de textura) (PVR_TXRENV_DECAL):
                           * el combinador (TEXEL0 - X) * TEXEL0_ALPHA + X, que la PVR no puede hacer con tex * base +
                           * offset; el vértice lleva X */
+    int fog;             /* niebla por vértice (PVR_FOG_VERTEX): el alfa del offset es el factor */
 } GbState;
 
 void gb_init(void);
@@ -56,6 +57,7 @@ void gb_frame_begin(unsigned clear_argb);
 void gb_frame_end(void);
 void gb_set_state(const GbState *st);
 void gb_triangle(const GbVert *a, const GbVert *b, const GbVert *c);
+void gb_fog_color(unsigned rgba);   /* color de niebla del cuadro (RGBA8888 de N64) */
 
 /* Estadística para el log */
 typedef struct {

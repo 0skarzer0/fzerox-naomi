@@ -384,7 +384,9 @@ void gb_set_state(const GbState *st) {
     }
     cxt.gen.shading = PVR_SHADE_GOURAUD;
     cxt.gen.culling = PVR_CULLING_NONE;
-    cxt.gen.specular = (sCurTex && st->use_offset && !st->decal_alpha) ? PVR_SPECULAR_ENABLE : PVR_SPECULAR_DISABLE;
+    cxt.gen.specular = ((sCurTex && st->use_offset && !st->decal_alpha) || st->fog) ? PVR_SPECULAR_ENABLE
+                                                                                     : PVR_SPECULAR_DISABLE;
+    cxt.gen.fog_type = st->fog ? PVR_FOG_VERTEX : PVR_FOG_DISABLE;
     cxt.depth.comparison = (st->depth_test || st->background) ? PVR_DEPTHCMP_GEQUAL : PVR_DEPTHCMP_ALWAYS;
     cxt.depth.write = (st->depth_write && !st->background) ? PVR_DEPTHWRITE_ENABLE : PVR_DEPTHWRITE_DISABLE;
     if (list) {
@@ -556,6 +558,12 @@ static void fps_draw(void) {
 }
 #endif
 
+static unsigned sFogColor;
+
+void gb_fog_color(unsigned rgba) {
+    sFogColor = rgba;
+}
+
 void gb_frame_end(void) {
     int l, i;
 
@@ -568,6 +576,8 @@ void gb_frame_end(void) {
     pvr_wait_ready();
     t1 = NOW_US();
     gPortProfWait += t1 - t0;
+    pvr_fog_vertex_color((sFogColor >> 24) / 255.0f, ((sFogColor >> 16) & 0xFF) / 255.0f,
+                         ((sFogColor >> 8) & 0xFF) / 255.0f);
     gPortStage = 21;
     pvr_scene_begin();
     for (l = 0; l < 2; l++) {

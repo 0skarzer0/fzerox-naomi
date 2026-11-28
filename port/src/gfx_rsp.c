@@ -118,6 +118,7 @@ static struct {
 static u32 sOmH, sOmL;
 static u32 sCombine0, sCombine1;
 static u32 sPrim, sEnv, sFill, sFog, sBlendColor;
+static s16 sFogM, sFogO;   /* G_MW_FOG: factor de niebla = z/w * sFogM + sFogO (0..255) */
 static u8 sPrimLod;
 static u32 sCimg, sZimg;
 
@@ -228,6 +229,7 @@ static void do_vtx(u32 w0, u32 w1) {
     Tile* tl = &sTiles[sTexture.tile];
     float ss = sTexture.s * (1.0f / 65536.0f) / 32.0f;
     float ts = sTexture.t * (1.0f / 65536.0f) / 32.0f;
+    float fogA = 0.0f;
     s32 i;
 
     if (v0 < 0 || v0 + n > MAX_VTX) {
@@ -279,6 +281,12 @@ static void do_vtx(u32 w0, u32 w1) {
 
             sVtxOut[v0 + i] = d->z + d->w < 0.0f || d->w < W_MIN || d->x > g || d->x < -g || d->y > g || d->y < -g;
         }
+        if (sGeom & G_FOG) {
+            /* el RSP pone el factor de niebla en el alfa del sombreado (tras el color o la luz, más abajo) */
+            float f = d->w > 0.0f ? d->z / d->w * sFogM + sFogO : 255.0f;
+
+            fogA = f < 0.0f ? 0.0f : (f > 255.0f ? 1.0f : f * (1.0f / 255.0f));
+        }
 
         if (sGeom & G_LIGHTING) {
             Vtx_tn* vn = &src[i].n;
@@ -326,6 +334,9 @@ static void do_vtx(u32 w0, u32 w1) {
             d->a = v->cn[3] * (1.0f / 255.0f);
             d->u = v->tc[0] * ss;
             d->v = v->tc[1] * ts;
+        }
+        if (sGeom & G_FOG) {
+            d->a = fogA;
         }
         (void) tl;
     }
@@ -819,6 +830,9 @@ static void state_update(void) {
     sState.background = sState.blend && !sState.depth_test && !sSeenZ;
     sState.overlay = !sState.blend && !sState.depth_test && !sState.depth_write && sSeenZ;
     sState.decal_alpha = sState.textured && sDecalA;
+    /* niebla: G_FOG (el RSP pone el factor en el alfa del sombreado) y el mezclador con el color de niebla (G_BL_CLR_FOG
+     * en el primer ciclo: fog * A + in * (1 - A)) */
+    sState.fog = (sGeom & G_FOG) && ((sOmL >> 30) & 3) == 3;
     trace("S cc=%06x:%08x om=%06x:%08x g=%06x tex=%d", (unsigned) sCombine0, (unsigned) sCombine1, (unsigned) sOmH,
           (unsigned) sOmL, (unsigned) sGeom, sState.textured);
     if (sState.textured) {
@@ -924,7 +938,7 @@ static void to_screen_col(GbVert* o, const RVtx* v) {
     if (sState.decal_alpha) {
         f0 = combine_eval(&shade, 0.0f);   /* con la textura a 0: X, y el alfa (que no la usa) */
         o->argb = pack(f0.r, f0.g, f0.b, f0.a);
-        o->oargb = 0;
+        o->oargb = sState.fog ? c8(v->a) << 24 : 0;
         return;
     }
     if (sPolyOk) {
@@ -946,6 +960,9 @@ static void to_screen_col(GbVert* o, const RVtx* v) {
             o->argb = pack(a0[0], a0[1], a0[2], a0[3]);
             o->oargb = 0;
         }
+        if (sState.fog) {
+            o->oargb |= c8(v->a) << 24;   /* el factor de niebla (alfa del sombreado) */
+        }
         return;
     }
     f0 = combine_eval(&shade, 0.0f);
@@ -956,6 +973,9 @@ static void to_screen_col(GbVert* o, const RVtx* v) {
     } else {
         o->argb = pack(f0.r, f0.g, f0.b, f0.a);
         o->oargb = 0;
+    }
+    if (sState.fog) {
+        o->oargb |= c8(v->a) << 24;
     }
 }
 
@@ -1476,7 +1496,7 @@ static void run_dl(Gfx* dl) {
             {
                 u32 g = (sGeom & (w0 | 0xFF000000)) | w1;
 
-                if ((g ^ sGeom) & G_ZBUFFER) {
+                if ((g ^ sGeom) & (G_ZBUFFER | G_FOG)) {
                     sStateDirty = 1;   /* del modo de geometría, el estado solo usa G_ZBUFFER (el descarte va aparte) */
                 }
                 sGeom = g;
@@ -1492,6 +1512,9 @@ static void run_dl(Gfx* dl) {
 
                 if (idx == G_MW_SEGMENT) {
                     sSeg[(off / 4) & 0xF] = w1;
+                } else if (idx == G_MW_FOG) {
+                    sFogM = (s16) (w1 >> 16);
+                    sFogO = (s16) (w1 & 0xFFFF);
                 } else if (idx == G_MW_NUMLIGHT) {
                     sNumLights = w1 / 24;
                     if (sNumLights > 7) {
@@ -1812,6 +1835,7 @@ void fzx_gfx_task(OSTask* t) {
               (unsigned) sCntCull, (unsigned) sCntVtx, (unsigned) sCntMtx);
         sTracing = 0;
     }
+    gb_fog_color(sFog);
     gb_frame_end();
     gPortFrames++;
     if ((gPortFrames % 300) == 1) {
