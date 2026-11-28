@@ -1363,6 +1363,10 @@ static u32 sHistPos;
 u32 gPortBadDL[2 + 16 + 32 * 3];
 extern u32 gPortFrames;
 
+/* Salto de cuadros: en un cuadro saltado la lista se recorre igual (el estado del RDP se queda de un cuadro a otro y la
+ * lista siguiente puede contar con él), pero sin vértices ni triángulos ni rectángulos, y no se manda nada a la PVR. */
+static s32 sSkipDraw;
+
 static void run_dl(Gfx* dl) {
     Gfx* stack[16];
     s32 sp = 0;
@@ -1383,14 +1387,23 @@ static void run_dl(Gfx* dl) {
             case G_LOAD_UCODE: case G_CULLDL: case G_SPECIAL_1: case G_SPECIAL_2: case G_SPECIAL_3: case G_DMA_IO:
                 break;
             case G_VTX:
+                if (sSkipDraw) {
+                    break;
+                }
                 do_vtx(w0, w1);
                 gPortProfVtxN += (w0 >> 12) & 0xFF;
                 break;
                 break;
             case G_TRI1:
+                if (sSkipDraw) {
+                    break;
+                }
                 draw_tri(((w0 >> 16) & 0xFF) / 2, ((w0 >> 8) & 0xFF) / 2, (w0 & 0xFF) / 2);
                 break;
             case G_TRI2: case G_QUAD:
+                if (sSkipDraw) {
+                    break;
+                }
                 draw_tri(((w0 >> 16) & 0xFF) / 2, ((w0 >> 8) & 0xFF) / 2, (w0 & 0xFF) / 2);
                 draw_tri(((w1 >> 16) & 0xFF) / 2, ((w1 >> 8) & 0xFF) / 2, (w1 & 0xFF) / 2);
                 break;
@@ -1557,7 +1570,9 @@ static void run_dl(Gfx* dl) {
                 u32 h1 = dl[0].words.w1, h2 = dl[1].words.w1;
 
                 dl += 2;   /* las dos medias órdenes que siguen (RDPHALF_1/2) */
-                do_texrect(w0, w1, h1, h2, op == G_TEXRECTFLIP);
+                if (!sSkipDraw) {
+                    do_texrect(w0, w1, h1, h2, op == G_TEXRECTFLIP);
+                }
                 break;
             }
             case G_SETPRIMDEPTH:
@@ -1610,7 +1625,9 @@ static void run_dl(Gfx* dl) {
                 break;
             }
             case G_FILLRECT:
-                do_fillrect(w0, w1);
+                if (!sSkipDraw) {
+                    do_fillrect(w0, w1);
+                }
                 break;
             case G_SETFILLCOLOR:
                 sFill = w1;
@@ -1687,10 +1704,47 @@ u32 gPortFrames;
 u32 gPortProfDl;
 static unsigned long long sProfT0, sProfLast;
 
+/* Salto de cuadros adaptativo (no es del original: en la N64, si un cuadro no llegaba a tiempo, el juego iba más
+ * lento). La lógica del juego da un paso por aviso de vblank (cola D_800DCAB0, que el parche de la decomp hace más
+ * honda); mientras se dibuja, los avisos se acumulan. Si al llegar una tarea ya hay avisos esperando, el juego va con
+ * retraso: no se dibuja, para que se ponga al día a su velocidad. Como mucho FZX_MAXSKIP seguidos (con 4, al menos
+ * 12 imágenes por segundo). make PORT_EXTRA=-DFZX_NOSKIP lo quita. */
+#ifndef FZX_MAXSKIP
+#define FZX_MAXSKIP 4
+#endif
+u32 gPortSkipped;   /* cuadros sin dibujar (para live_ram.py) */
+
+static s32 frame_skip_decide(void) {
+#ifdef FZX_NOSKIP
+    return 0;
+#else
+    extern OSMesgQueue D_800DCAB0;
+    static s32 run;
+    s32 skip = D_800DCAB0.validCount > 0 && run < FZX_MAXSKIP;
+
+    run = skip ? run + 1 : 0;
+    return skip;
+#endif
+}
+
 void fzx_gfx_task(OSTask* t) {
     if (!sInit) {
         gb_init();
         sInit = 1;
+    }
+    sSkipDraw = frame_skip_decide();
+    if (sSkipDraw) {
+        /* solo el estado: la lista entera sin dibujar nada */
+        sMvTop = 0;
+        sMvpDirty = 1;
+        sLightsDirty = 1;
+        sStateDirty = 1;
+        bzero(sLoads, sizeof(sLoads));
+        run_dl(resolve((u32) t->t.data_ptr));
+        sSkipDraw = 0;
+        gPortSkipped++;
+        gPortFrames++;
+        return;
     }
     /* el estado del RSP empieza de cero en cada tarea; el del RDP se queda (como en N64) */
     sMvTop = 0;

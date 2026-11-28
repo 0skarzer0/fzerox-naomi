@@ -607,10 +607,25 @@ index a3b8a0e..1437e95 100644
                     (size_t) SEGMENT_DATA_SIZE_CONST(course_track_gfx),
                 osPhysicalToVirtual(gSegment16C8A0VramStart));
 diff --git a/src/sys/sys_main.c b/src/sys/sys_main.c
-index c3e47a1..637580a 100644
+index c3e47a1..e8be010 100644
 --- a/src/sys/sys_main.c
 +++ b/src/sys/sys_main.c
-@@ -59,6 +59,9 @@ OSPiHandle* gDriveRomHandle;
+@@ -35,7 +35,14 @@ OSMesg sPiMgrCmdBuf[64];
+ OSMesg sDmaMsgBuf[1];
+ OSMesg sSerialEventBuf[1];
+ OSMesg sAudioTaskMsgBuf[1];
++#ifdef NAOMI_HOST
++/* fzerox-naomi: los avisos de vblank del juego, con sitio para varios: si un cuadro tarda más de un vblank, el juego
++ * da después los pasos que le faltan seguidos (y el port no los dibuja: salto de cuadros en gfx_rsp.c) en vez de
++ * perderlos e ir a cámara lenta */
++OSMesg D_800DCC34[6];
++#else
+ OSMesg D_800DCC34[1];
++#endif
+ OSMesg D_800DCC38[1];
+ OSMesg sMainThreadMsgBuf[16];
+ OSMesg sResetMsgBuf[1];
+@@ -59,6 +66,9 @@ OSPiHandle* gDriveRomHandle;
  #endif
  
  void Idle_ThreadEntry(void*);
@@ -620,7 +635,7 @@ index c3e47a1..637580a 100644
  void Reset_ThreadEntry(void*);
  
  void bootproc(void) {
-@@ -436,7 +439,15 @@ void Idle_ThreadEntry(void* arg0) {
+@@ -436,7 +446,15 @@ void Idle_ThreadEntry(void* arg0) {
      }
      osSetThreadPri(NULL, OS_PRIORITY_IDLE);
  

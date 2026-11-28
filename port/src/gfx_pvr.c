@@ -502,33 +502,18 @@ static void fps_rect(float x0, float y0, float x1, float y1, unsigned argb) {
     gb_triangle(&v[1], &v[3], &v[2]);
 }
 
-static void fps_draw(void) {
+static void fps_number(unsigned shown, float y, unsigned col) {
     /* segmentos a b c d e f g (bit 0 = a) */
     static const unsigned char seg[10] = { 0x3F, 0x06, 0x5B, 0x4F, 0x66, 0x6D, 0x7D, 0x07, 0x7F, 0x6F };
-    static unsigned last, frames, shown = 60;
-    GbState st;
-    unsigned now = NOW_US(), col;
     int d, n, digits[3], nd = 0;
     const float W = 12, H = 22, T = 3, GAP = 5;
-    float x, y = 12;
+    float x;
 
-    frames++;
-    if (last == 0) {
-        last = now;
-    } else if (now - last >= 500000) {
-        shown = (unsigned) ((frames * 1000000ULL + (now - last) / 2) / (now - last));
-        frames = 0;
-        last = now;
-    }
-    memset(&st, 0, sizeof(st));
-    st.overlay = 1;
-    gb_set_state(&st);
     n = shown > 999 ? 999 : (int) shown;
     do {
         digits[nd++] = n % 10;
         n /= 10;
     } while (n > 0);
-    col = shown >= 59 ? 0xFF40FF40 : (shown >= 30 ? 0xFFFFE040 : 0xFFFF4040);
     x = 640 - 12 - nd * (W + GAP) + GAP;
     fps_rect(x - 4, y - 4, 640 - 8, y + H + 4, 0xFF000000);
     for (d = nd - 1; d >= 0; d--, x += W + GAP) {
@@ -542,6 +527,32 @@ static void fps_draw(void) {
         if (m & 0x20) fps_rect(x, y, x + T, y + H / 2, col);
         if (m & 0x40) fps_rect(x, y + (H - T) / 2, x + W, y + (H + T) / 2, col);
     }
+}
+
+/* arriba, imágenes dibujadas por segundo (verde >= 59, amarillo >= 30, rojo menos); debajo, en azul, cuadros del
+ * juego por segundo (su velocidad: con el salto de cuadros puede ir a 60 aunque se dibujen menos) */
+static void fps_draw(void) {
+    extern unsigned gPortFrames;
+    static unsigned last, frames, lastGame, shown = 60, shownGame = 60;
+    GbState st;
+    unsigned now = NOW_US();
+
+    frames++;
+    if (last == 0) {
+        last = now;
+        lastGame = gPortFrames;
+    } else if (now - last >= 500000) {
+        shown = (unsigned) ((frames * 1000000ULL + (now - last) / 2) / (now - last));
+        shownGame = (unsigned) (((gPortFrames - lastGame) * 1000000ULL + (now - last) / 2) / (now - last));
+        frames = 0;
+        last = now;
+        lastGame = gPortFrames;
+    }
+    memset(&st, 0, sizeof(st));
+    st.overlay = 1;
+    gb_set_state(&st);
+    fps_number(shown, 12, shown >= 59 ? 0xFF40FF40 : (shown >= 30 ? 0xFFFFE040 : 0xFFFF4040));
+    fps_number(shownGame, 44, 0xFF40C0FF);
 }
 #endif
 
