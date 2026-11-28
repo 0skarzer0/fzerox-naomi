@@ -199,6 +199,14 @@ Sigue pendiente:
   usa el 95 % de los cargados). Banco en Flycast: `FZX_AUTOPAD_HOLD=8` (Select Machine) mide `lista` en el log.
   Siguiente: Select Machine (23) sigue lejos; `to_screen_col`/`pack`, `draw_tri_` y los cambios de estado reales
   (481 por cuadro: `poly_compile`, `fzx_is_mio0` en `tile_texture`).
+  **Segunda tanda (7c7f928):** `c8` sin `ftrc` y 1/w con `fsrra`: Select Machine 22 (sin cambio), carrera con 23
+  naves delante 44. El perfil de Select Machine sigue plano (vértices 17 %, triángulos 15 %, cola 9 %, estado 11 %,
+  color 14 %): por software quedan mejoras pequeñas. **Lo grande sería el ELAN** de la NAOMI 2 (el chip de
+  transformación e iluminación, 100 MHz, que la placa tiene: `0xa8800000` = `0xe1ad0000`), que hoy no se usa: haría el
+  trabajo de `do_vtx`, `draw_tri_`, `to_screen_*` y la cola (~60 % del cuadro). Referencia: `flycast/core/hw/pvr/elan.cpp`
+  y `elan_struct.h` (Flycast lo emula; `naomi2.zip` ya está en `~/fctest`).
+- Adornos blancos (postes que giran, arcos que se atraviesan) en los circuitos, "desde siempre" (como el panel blanco
+  de Mute City): sin investigar.
 
 ### Fase 2 (2026-11-27): hecha, en Flycast; la carrera ya se ve
 
