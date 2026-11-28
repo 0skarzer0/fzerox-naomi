@@ -666,10 +666,18 @@ static Col combine_eval(const Col* shade, float t) {
     return o;
 }
 
+/* 0..1 -> 0..255 sin ftrc (en la SH-4, ftrc + sts fpul se lleva varios ciclos de espera): sumando 1,5 * 2^23 el
+ * entero redondeado queda en los bits bajos de la mantisa, que se leen con flds/sts. Vale para |f * 255| < 2^22. */
 static inline u32 c8(float f) {
-    s32 i = (s32) (f * 255.0f);
+    union {
+        float f;
+        s32 i;
+    } u;
+    s32 i;
 
-    return i < 0 ? 0 : (i > 255 ? 255 : (u32) i);
+    u.f = f * 255.0f + 12582912.0f;
+    i = u.i - 0x4B400000;
+    return (u32) i > 255 ? (i < 0 ? 0 : 255) : (u32) i;
 }
 
 static u32 pack(float r, float g, float b, float a) {
@@ -833,7 +841,9 @@ static void tex_scale_update(void) {
 
 static inline void to_screen_pos(GbVert* o, const RVtx* v) {
     float w = v->w < 1e-5f ? 1e-5f : v->w;
-    float iw = 1.0f / w;
+    float iw = w * w;
+
+    __asm__("fsrra %0" : "+f"(iw));   /* 1/sqrt(w*w) = 1/w (w > 0) en una instrucción, en vez de fdiv */
 
     o->x = (sVp.tx + v->x * iw * sVp.sx) * SCREEN_SCALE;
     o->y = (sVp.ty - v->y * iw * sVp.sy) * SCREEN_SCALE;
