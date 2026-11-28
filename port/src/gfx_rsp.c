@@ -97,13 +97,19 @@ typedef struct {
     const u8* addr;
     s32 stride;
     s32 valid;
-    s32 words;   /* LOADBLOCK: palabras de 8 bytes cargadas (0: LOADTILE, solo vale su tmem exacta) */
-    u32 seq;     /* la más reciente gana */
+    s32 words;   /* palabras de 8 bytes de TMEM que ocupa */
+    s32 line;    /* LOADTILE: palabras por fila en TMEM (para un tile que empiece a mitad de la carga) */
 } Load;
-static u32 sLoadSeq;
 
 static Tile sTiles[8];
-static Load sLoads[8];   /* una por tmem distinta, la última gana */
+/* La TMEM (512 palabras de 8 bytes) como en la N64: cada palabra recuerda qué carga la escribió por última vez, y se
+ * conserva de un cuadro a otro. El juego cuenta con ello: cada nave carga 6 texturas en zonas distintas y algunas
+ * piezas usan lo que quedó cargado antes; con un registro de 8 cargas que se vaciaba en cada cuadro, esas piezas no
+ * encontraban textura y salían blancas (adornos y paneles de los circuitos). */
+#define LOAD_RING 256
+static Load sLoadRing[LOAD_RING];
+static s32 sLoadNext;
+static u16 sTmemOwner[512];   /* índice + 1 en sLoadRing (0 = nada) */
 static const u8* sTlut[16];
 static struct {
     u32 addr;
@@ -696,22 +702,19 @@ static GbState sState;
 
 
 static const u8* tile_texture(GbTexture* tx, Tile* t) {
-    s32 i;
-    const Load* ld = NULL;
-    s32 w, h, bpp;
+    const Load* ld;
+    s32 w, h, bpp, d;
+    u32 o = sTmemOwner[t->tmem & 511];
 
-    for (i = 0; i < 8; i++) {
-        const Load* l = &sLoads[i];
-
-        /* la carga que empieza en esta tmem, o (LOADBLOCK) la que la contiene: un bloque de 4 KB con 8 fotogramas de
-         * 32x32 y un tile por fotograma, como los efectos de choque y recarga */
-        if (l->valid && (l->tmem == t->tmem || (l->words > 0 && t->tmem > l->tmem && t->tmem < l->tmem + l->words)) &&
-            (ld == NULL || l->seq > ld->seq)) {
-            ld = l;
-        }
-    }
-    if (ld == NULL) {
+    /* la carga que escribió la TMEM donde empieza el tile (puede empezar a mitad de una carga: un bloque de 4 KB con
+     * 8 fotogramas de 32x32 y un tile por fotograma, como los efectos de choque y recarga) */
+    if (o == 0) {
         return NULL;
+    }
+    ld = &sLoadRing[o - 1];
+    d = t->tmem - ld->tmem;
+    if (!ld->valid || d < 0 || d >= ld->words) {
+        return NULL;   /* su hueco del anillo ya es de otra carga */
     }
     w = ((t->lrs - t->uls) >> 2) + 1;
     h = ((t->lrt - t->ult) >> 2) + 1;
@@ -724,7 +727,11 @@ static const u8* tile_texture(GbTexture* tx, Tile* t) {
     if (w <= 0 || h <= 0 || w > 1024 || h > 1024) {
         return NULL;
     }
-    tx->addr = ld->addr + (t->tmem - ld->tmem) * 8;
+    if (ld->stride && ld->line > 0) {
+        tx->addr = ld->addr + (d / ld->line) * ld->stride + (d % ld->line) * 8;   /* LOADTILE: por filas */
+    } else {
+        tx->addr = ld->addr + d * 8;
+    }
     tx->fmt = t->fmt;
     tx->siz = t->siz;
     tx->width = w;
@@ -1240,51 +1247,35 @@ static void do_fillrect(u32 w0, u32 w1) {
 
 /* ------------------------------------------------------------------ RDP: texturas */
 
-static s32 record_load(s32 tmem, const u8* addr, s32 stride, s32 words) {
-    s32 i, slot = -1;
-    u32 oldest = 0xFFFFFFFF;
+static s32 record_load(s32 tmem, const u8* addr, s32 stride, s32 words, s32 line) {
+    u32 o;
+    s32 k, end;
 
-    for (i = 0; i < 8; i++) {
-        if (sLoads[i].valid && sLoads[i].tmem == tmem) {
-            slot = i;
+    tmem &= 511;
+    if (words < 1) {
+        words = 1;
+    }
+    end = tmem + words > 512 ? 512 : tmem + words;
+    o = sTmemOwner[tmem];
+    if (o != 0) {
+        const Load* l = &sLoadRing[o - 1];
+
+        if (l->valid && l->tmem == tmem && l->addr == addr && l->stride == stride && l->words == words &&
+            l->line == line && sTmemOwner[end - 1] == o) {
+            return 0;   /* la misma carga otra vez, y nadie la ha pisado: nada cambia */
         }
     }
-    if (slot < 0) {
-        /* sin hueco libre: la más antigua */
-        for (i = 0; i < 8; i++) {
-            if (sLoads[i].valid && sLoads[i].seq < oldest) {
-                oldest = sLoads[i].seq;
-                slot = i;
-            }
-        }
-        for (i = 0; i < 8; i++) {
-            if (!sLoads[i].valid) {
-                slot = i;
-                break;
-            }
-        }
+    k = sLoadNext;
+    sLoadNext = (sLoadNext + 1) % LOAD_RING;
+    sLoadRing[k].valid = 1;
+    sLoadRing[k].tmem = tmem;
+    sLoadRing[k].addr = addr;
+    sLoadRing[k].stride = stride;
+    sLoadRing[k].words = words;
+    sLoadRing[k].line = line;
+    for (; tmem < end; tmem++) {
+        sTmemOwner[tmem] = (u16) (k + 1);
     }
-    if (slot < 0) {
-        for (i = 0; i < 8; i++) {
-            if (!sLoads[i].valid) {
-                slot = i;
-                break;
-            }
-        }
-    }
-    if (slot < 0) {
-        slot = 0;
-    }
-    if (sLoads[slot].valid && sLoads[slot].tmem == tmem && sLoads[slot].addr == addr && sLoads[slot].stride == stride &&
-        sLoads[slot].words == words && sLoads[slot].seq == sLoadSeq) {
-        return 0;   /* la misma carga otra vez: nada cambia */
-    }
-    sLoads[slot].valid = 1;
-    sLoads[slot].tmem = tmem;
-    sLoads[slot].addr = addr;
-    sLoads[slot].stride = stride;
-    sLoads[slot].words = words;
-    sLoads[slot].seq = ++sLoadSeq;
     return 1;
 }
 
@@ -1300,12 +1291,17 @@ static void do_loadtile(u32 w0, u32 w1) {
     const u8* base = resolve(sTimg.addr);
 
     s32 changed;
+    s32 rows = ((s32) (w1 & 0xFFF) - ult) / 4 + 1;
+    s32 line = t->line > 0 ? t->line : 1;
 
+    if (rows < 1) {
+        rows = 1;
+    }
     if (sTimg.siz == G_IM_SIZ_4b) {
         stride = sTimg.width / 2;
-        changed = record_load(t->tmem, base + (ult >> 2) * stride + (uls >> 2) / 2, stride, 0);
+        changed = record_load(t->tmem, base + (ult >> 2) * stride + (uls >> 2) / 2, stride, rows * line, line);
     } else {
-        changed = record_load(t->tmem, base + (ult >> 2) * stride + (uls >> 2) * bpp, stride, 0);
+        changed = record_load(t->tmem, base + (ult >> 2) * stride + (uls >> 2) * bpp, stride, rows * line, line);
     }
     changed |= t->uls != uls || t->ult != ult || t->lrs != (s32) ((w1 >> 12) & 0xFFF) || t->lrt != (s32) (w1 & 0xFFF);
     t->uls = uls;
@@ -1330,7 +1326,7 @@ static void do_loadblock(u32 w0, u32 w1) {
         off = (ult * sTimg.width + uls) / 2;
         bytes = texels / 2;
     }
-    if (record_load(t->tmem, base + off, 0, (bytes + 7) / 8)) {   /* filas de line * 8 bytes, como en la TMEM */
+    if (record_load(t->tmem, base + off, 0, (bytes + 7) / 8, 0)) {   /* filas de line * 8 bytes, como en la TMEM */
         sStateDirty = 1;
     }
 }
@@ -1427,6 +1423,7 @@ static void run_dl(Gfx* dl) {
                 break;
             }
             case G_TEXTURE:
+                trace(" TX %08x %08x\n", (unsigned) w0, (unsigned) w1);
                 sTexture.s = w1 >> 16;
                 sTexture.t = w1 & 0xFFFF;
                 if (sTexture.tile != ((w0 >> 8) & 7) || sTexture.on != ((w0 & 0xFF) != 0)) {
@@ -1606,6 +1603,8 @@ static void run_dl(Gfx* dl) {
                 Tile* t = &sTiles[(w1 >> 24) & 7];
                 Tile o = *t;
 
+                trace(" ST %08x %08x\n", (unsigned) w0, (unsigned) w1);
+
                 t->fmt = (w0 >> 21) & 7;
                 t->siz = (w0 >> 19) & 3;
                 t->line = (w0 >> 9) & 0x1FF;
@@ -1659,6 +1658,7 @@ static void run_dl(Gfx* dl) {
                 }
                 break;
             case G_SETTIMG:
+                trace(" TI %08x %08x\n", (unsigned) w0, (unsigned) w1);
                 sTimg.fmt = (w0 >> 21) & 7;
                 sTimg.siz = (w0 >> 19) & 3;
                 sTimg.width = (w0 & 0xFFF) + 1;
@@ -1739,7 +1739,7 @@ void fzx_gfx_task(OSTask* t) {
         sMvpDirty = 1;
         sLightsDirty = 1;
         sStateDirty = 1;
-        bzero(sLoads, sizeof(sLoads));
+        /* (la TMEM se conserva entre tareas, como en la N64) */
         run_dl(resolve((u32) t->t.data_ptr));
         sSkipDraw = 0;
         gPortSkipped++;
@@ -1751,7 +1751,7 @@ void fzx_gfx_task(OSTask* t) {
     sMvpDirty = 1;
     sLightsDirty = 1;
     sStateDirty = 1;
-    bzero(sLoads, sizeof(sLoads));
+    /* (la TMEM se conserva entre tareas, como en la N64) */
     gb_frame_begin(0xFF000000);
     sSeenZ = 0;
     sModeFrames = (gPortTraceMode != 0 && ((u32) gGameMode & 0xFF) == gPortTraceMode) ? sModeFrames + 1 : 0;
